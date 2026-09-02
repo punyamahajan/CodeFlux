@@ -1,0 +1,43 @@
+circuit_breaker:
+  failure_threshold: 3
+  cooldown_seconds: 30
+
+provider_base_urls:
+  # Use http://ollama:11434/v1 when CodeFlux itself runs in Docker Compose.
+  ollama: http://localhost:11434/v1
+
+routes:
+  gpt-4-tier:
+    strategy: priority
+    total_timeout_seconds: 180
+    pii_redaction: false
+    candidates:
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
+        timeout_seconds: 20
+      - provider: groq
+        model: llama-3.3-70b-versatile
+        api_key_ref: groq-primary
+        timeout_seconds: 15
+    ollama_fallback_model: llama3.2
+    ollama_fallback_timeout_seconds: 120
+
+  gemini-tier:
+    strategy: least-latency
+    candidates:
+      - provider: gemini
+        model: gemini-2.0-flash
+        api_key_ref: gemini-primary
+      - provider: openrouter
+        model: google/gemini-2.0-flash-001
+        api_key_ref: openrouter-primary
+    ollama_fallback_model: llama3.2
+    ollama_fallback_timeout_seconds: 120
+
+  embeddings:
+    strategy: round-robin
+    candidates:
+      - provider: openai
+        model: text-embedding-3-small
+        api_key_ref: openai-primary
