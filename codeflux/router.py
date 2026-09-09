@@ -42,6 +42,7 @@ class RoutingEngine:
         self.circuits, self.usage, self.redactor = circuits, usage, redactor or PIIRedactor()
         self._round_robin: defaultdict[str, int] = defaultdict(int)
         self._latencies: defaultdict[str, deque[float]] = defaultdict(lambda: deque(maxlen=50))
+        self.last_route: dict[str, object] | None = None
 
     def _ordered(self, alias: str, route: RouteConfig) -> list[CandidateConfig]:
         candidates = list(route.candidates)
@@ -84,6 +85,10 @@ class RoutingEngine:
             if remaining <= 0:
                 break
             key_ref, api_key = await self.key_pool.select(candidate.provider, candidate.api_key_ref)
+            if not api_key and candidate.provider != "ollama":
+                logger.warning("no_key_available", extra={"route": request.model, "provider": candidate.provider})
+                attempts.append(f"{candidate.provider}:no-key")
+                continue
             identity = f"{candidate.provider}:{key_ref or 'anonymous'}"
             if not await self.circuits.allow(identity):
                 CIRCUITS.labels(identity).set(1)
@@ -95,6 +100,7 @@ class RoutingEngine:
             started = time.monotonic()
             try:
                 response = await asyncio.wait_for(adapter.chat_completion(provider_request, api_key), timeout=min(remaining, candidate.timeout_seconds))
+                await self.key_pool.update_limits(key_ref, response.rate_limit_headers)
                 elapsed = time.monotonic() - started
                 self._latencies[candidate.provider].append(elapsed)
                 LATENCY.labels(candidate.provider).observe(elapsed)
@@ -104,6 +110,7 @@ class RoutingEngine:
                 TOKENS.labels(candidate.provider, "prompt", key_ref or "anonymous").inc(response.usage.prompt_tokens)
                 TOKENS.labels(candidate.provider, "completion", key_ref or "anonymous").inc(response.usage.completion_tokens)
                 await self.usage.record(team=team, provider=candidate.provider, key_ref=key_ref, model=candidate.model, prompt_tokens=response.usage.prompt_tokens, completion_tokens=response.usage.completion_tokens)
+                self.last_route = {"alias": request.model, "provider": candidate.provider, "model": candidate.model, "key_ref": key_ref, "team": team, "attempts": list(attempts)}
                 logger.info("request_complete", extra={"route": request.model, "provider": candidate.provider, "latency_ms": round(elapsed * 1000, 2), "attempts": attempts, "team": team})
                 return RoutingResult(response=response, provider=candidate.provider, key_ref=key_ref, attempts=attempts)
             except Exception as exc:  # noqa: BLE001 - adapters may raise vendor SDK exceptions
@@ -134,6 +141,10 @@ class RoutingEngine:
         deadline = time.monotonic() + route.total_timeout_seconds
         for candidate in candidates:
             key_ref, api_key = await self.key_pool.select(candidate.provider, candidate.api_key_ref)
+            if not api_key and candidate.provider != "ollama":
+                logger.warning("no_key_available", extra={"route": request.model, "provider": candidate.provider})
+                attempts.append(f"{candidate.provider}:no-key")
+                continue
             identity = f"{candidate.provider}:{key_ref or 'anonymous'}"
             if not await self.circuits.allow(identity):
                 continue
@@ -144,6 +155,7 @@ class RoutingEngine:
             try:
                 first = await asyncio.wait_for(anext(stream), timeout=min(candidate.timeout_seconds, max(0.01, deadline - time.monotonic())))
                 await self.circuits.success(identity)
+                self.last_route = {"alias": request.model, "provider": candidate.provider, "model": candidate.model, "key_ref": key_ref, "team": team, "attempts": list(attempts), "streaming": True}
 
                 async def with_first(initial=first, upstream=stream) -> AsyncIterator[StreamChunk]:
                     yield initial

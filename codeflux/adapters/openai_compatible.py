@@ -70,17 +70,23 @@ class OpenAICompatibleAdapter:
             completion_tokens=usage_data.get("completion_tokens", 0),
             total_tokens=usage_data.get("total_tokens", 0),
         )
+        limit_headers = {
+            key.lower(): value
+            for key, value in response.headers.items()
+            if key.lower().startswith("x-ratelimit-")
+        }
         if request.operation == "embedding":
             return NormalizedResponse(
                 id=data.get("id", f"embd-{uuid.uuid4().hex}"), model=data.get("model", request.model),
                 embeddings=[item["embedding"] for item in data.get("data", [])], usage=usage, raw=data,
+                rate_limit_headers=limit_headers,
             )
         choice = data.get("choices", [{}])[0]
         content = choice.get("text") if request.operation == "completion" else choice.get("message", {}).get("content")
         return NormalizedResponse(
             id=data.get("id", f"chatcmpl-{uuid.uuid4().hex}"), model=data.get("model", request.model),
             content=content or "", finish_reason=choice.get("finish_reason", "stop"), usage=usage, raw=data,
-            created=data.get("created", int(time.time())),
+            created=data.get("created", int(time.time())), rate_limit_headers=limit_headers,
         )
 
     async def stream_chat_completion(
@@ -113,4 +119,3 @@ class OpenAICompatibleAdapter:
             return ProviderHealth(provider=self.name, state=state, latency_ms=(time.monotonic() - started) * 1000)
         except httpx.HTTPError as exc:
             return ProviderHealth(provider=self.name, state=HealthState.unavailable, detail=str(exc))
-

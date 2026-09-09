@@ -1,279 +1,242 @@
-# CodeFlux
+# CodeFlux ⚡
 
-CodeFlux is a self-hosted FastAPI gateway that presents one OpenAI- and Gemini-compatible API while routing calls across multiple LLM providers. It normalizes requests, chooses a configured candidate and transparently fails over when an upstream times out, rate-limits, or fails.
+CodeFlux is a self-hosted multi-provider AI gateway and Streamlit control room. Applications call one OpenAI- or Gemini-compatible API while CodeFlux selects an upstream model, rotates a shared pool of encrypted credentials, and automatically fails over when a provider times out, rate-limits, or exhausts its quota.
 
-This implementation favors a small, readable architecture suitable for extension and study. It includes encrypted credentials, per-key circuit breakers, key rotation, SQLite usage records, Prometheus metrics, PII masking, team authorization, streaming, and Ollama fallback.
+The control room adds a persistent, provider-independent **Work Planner**. A user enters a master prompt, an AI converts it into an actionable checklist, people can edit steps and mark progress, and **Do the work** executes against the current checklist state. Because progress is stored in SQLite instead of one provider's chat history, any subsequent provider can continue without losing context when a previous provider's quota is exhausted.
 
-## Architecture
+---
 
-```text
-OpenAI / Gemini client
-          |
-    FastAPI + auth
-          |
-  canonical normalization ---- optional PII redaction
-          |
-    routing engine
-     /    |     \
- key pool circuit  strategy/latency
-     \    |     /
-   provider adapter registry
-    /       |          \
- OpenAI   Gemini   OpenAI-compatible providers
-          |
- usage SQLite + Prometheus + JSON logs
-```
+## What Works Now
 
-The registry includes OpenAI, Gemini, Groq, Mistral, Cohere, Together, OpenRouter, Perplexity, DeepSeek, Ollama, Azure OpenAI, Bedrock (via a compatibility bridge), xAI, Fireworks and NVIDIA. Services exposing the OpenAI wire format share one adapter. Native Gemini conversion lives separately.
+- **Universal API compatibility**: OpenAI-compatible chat completions (`/v1/chat/completions`), embeddings, legacy completions, models listing, and SSE streaming, plus native Gemini `generateContent`.
+- **Intelligent multi-candidate failover**: Cascades across providers (e.g. OpenAI → Gemini → Groq → local Ollama) with overall request deadline enforcement.
+- **Quota pool with LRU rotation**: Multiple contributors can add API keys for any provider. Keys are rotated by least-recently-used (LRU) order, and keys with observed rate limits (`x-ratelimit-*`) are automatically paused until their reported reset time.
+- **Zero-plaintext security**: All provider keys are encrypted at rest using AES (Fernet symmetric encryption) derived from your master secret. Plaintext keys are never shown again or leaked to clients.
+- **Client key authentication**: External clients use Gateway Keys (`CODEFLUX_GATEWAY_KEYS`), completely shielding your upstream provider API keys.
+- **In-memory circuit breakers**: Prevents cascading failures by opening circuits on consecutive provider errors and attempting half-open recovery after a cooldown.
+- **Prometheus telemetry & structured logs**: Real-time metrics at `/metrics` and structured JSON logs.
+- **Streamlit control room**: Dashboard showing live gateway status, circuit states, observed rate limits, and token usage, plus the persistent work planner and encrypted quota pool.
 
-## Run CodeFlux locally
+---
+
+## Current Logical Routes
+
+Routes are defined in [`config/routes.yaml`](config/routes.yaml):
+
+| Route Alias | Strategy | Active Candidates & Failover Order |
+| :--- | :--- | :--- |
+| `gpt-4-tier` | Priority | 1. OpenAI `gpt-4o-mini`<br>2. Gemini `gemini-3.1-flash-lite`<br>3. Gemini `gemini-flash-latest`<br>4. Groq `llama-3.3-70b-versatile`<br>5. Ollama `llama3.2` *(fallback)* |
+| `gemini-tier` | Priority | 1. Gemini `gemini-3.1-flash-lite`<br>2. Gemini `gemini-flash-latest`<br>3. OpenAI `gpt-4o-mini`<br>4. OpenRouter `google/gemini-2.0-flash-001`<br>5. Ollama `llama3.2` *(fallback)* |
+| `embeddings` | Round-robin | 1. OpenAI `text-embedding-3-small` |
+
+---
+
+## 🚀 How to Start the Project (Step-by-Step Plan)
 
 ### Prerequisites
+- **Python 3.10+** installed
+- **Git** installed
+- An API key from **Google AI Studio** (Gemini), **OpenAI**, or **Groq** (or a local **Ollama** instance)
 
-- Python 3.10 or newer
-- Git
-- At least one upstream provider API key, such as OpenAI, Gemini, or Groq
-- Docker Desktop only if you want to use the Docker setup
+---
 
-### 1. Open the project directory
-
-```powershell
-cd C:\path\to\CodeFlux
-```
-
-### 2. Create and activate a virtual environment
-
-Windows PowerShell:
+### Step 1: Clone and Set Up Virtual Environment
 
 ```powershell
+# Navigate into the project folder
+cd CodeFlux
+
+# Create a virtual environment
 python -m venv .venv
+
+# Activate the virtual environment
+# On Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
-```
+# On macOS / Linux:
+# source .venv/bin/activate
 
-If PowerShell blocks activation, run this in the current terminal and try again:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
-
-macOS or Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install CodeFlux
-
-```powershell
+# Upgrade pip and install dependencies in editable mode
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-### 4. Create and configure `.env`
+---
 
-Windows PowerShell:
+### Step 2: Configure Environment Variables
+
+Create your `.env` file from the provided example:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-macOS or Linux:
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and configure it. Credential reference names must match the `api_key_ref` values in `config/routes.yaml`.
+Ensure your `.env` contains:
 
 ```dotenv
-CODEFLUX_MASTER_SECRET=replace-this-with-a-long-random-secret
+# Secret used to encrypt/decrypt pooled API keys in SQLite (keep this stable between runs!)
+CODEFLUX_MASTER_SECRET=replace-with-a-long-random-and-stable-secret
+
+# Client keys for accessing the gateway (Format: <key>:<team>)
 CODEFLUX_GATEWAY_KEYS=demo-key:demo,admin-key:admin
+
+# Password to log into the Streamlit dashboard
+CODEFLUX_DASHBOARD_PASSWORD=Punya@1806
+
+# Path to routes and SQLite database
 CODEFLUX_CONFIG_PATH=config/routes.yaml
 CODEFLUX_DATABASE_URL=sqlite+aiosqlite:///./data/codeflux.db
-CODEFLUX_CREDENTIALS_JSON={"openai-primary":{"provider":"openai","key":"sk-your-openai-key"},"groq-primary":{"provider":"groq","key":"gsk-your-groq-key"},"gemini-primary":{"provider":"gemini","key":"your-gemini-key"}}
+
+# Host and port for the FastAPI gateway
+CODEFLUX_HOST=0.0.0.0
+CODEFLUX_PORT=8000
 ```
 
-You do not need credentials for every provider. At least one candidate in the route you call must have a valid credential or a working Ollama instance. Keep the same master secret between restarts because changing it makes existing encrypted credentials unreadable. Never commit `.env`.
+> ⚠️ **Important**: Keep `CODEFLUX_MASTER_SECRET` stable. If you change this secret after adding keys, previously encrypted keys cannot be decrypted.
 
-### 5. Review the routing configuration
+---
 
-Open `config/routes.yaml`. Clients send a logical route name such as `gpt-4-tier`; CodeFlux maps that name to native provider models. Ensure the route includes a provider whose key you configured.
+### Step 3: Start the Backend Gateway
 
-### 6. Start the API
+In **Terminal 1** (with `.venv` activated):
 
 ```powershell
 python -m codeflux
 ```
 
-CodeFlux starts at `http://localhost:8000`. Keep this terminal open. Swagger documentation is available at `http://localhost:8000/docs`.
+The gateway starts on **`http://localhost:8000`**.
+- OpenAPI Docs: `http://localhost:8000/docs`
+- Health check: `http://localhost:8000/health`
+- Live metrics: `http://localhost:8000/metrics`
 
-### 7. Verify the server
+---
 
-Open another PowerShell terminal:
+### Step 4: Start the Streamlit Control Room
 
-```powershell
-Invoke-RestMethod http://localhost:8000/health
-```
-
-Expected response:
-
-```json
-{"status":"ok","service":"codeflux"}
-```
-
-List the available routes:
+In **Terminal 2** (with `.venv` activated):
 
 ```powershell
-Invoke-RestMethod `
-  -Uri http://localhost:8000/v1/models `
-  -Headers @{ Authorization = "Bearer demo-key" }
+streamlit run streamlit_app.py
 ```
 
-Send a chat request:
+The dashboard opens in your browser at **`http://localhost:8501`**.
 
+---
+
+### Step 5: Add Provider API Keys to the Quota Pool
+
+1. In the dashboard, click the **Quota pool** tab.
+2. Under **Contribute a provider key**:
+   - **Contributor name**: your name (e.g. `punya`)
+   - **Provider**: select `gemini` or `openai`
+   - **Provider API key**: paste your raw key
+3. Click **Encrypt and add to pool**.
+   - The key is immediately encrypted into `data/codeflux.db`.
+   - The plaintext is never stored or shown again.
+   - You can add multiple keys for the same provider to expand your daily quota!
+
+---
+
+### Step 6: Test Your Gateway Key (`demo-key`)
+
+You can test that your gateway key works using PowerShell, Python, or curl:
+
+#### Via PowerShell:
 ```powershell
+$headers = @{
+    Authorization = "Bearer demo-key"
+    "Content-Type" = "application/json"
+}
 $body = @{
-  model = "gpt-4-tier"
-  messages = @(
-    @{ role = "user"; content = "Say hello from CodeFlux" }
-  )
-} | ConvertTo-Json -Depth 5
+    model = "gemini-tier"
+    messages = @(
+        @{ role = "user"; content = "Say hello from CodeFlux!" }
+    )
+} | ConvertTo-Json
 
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/v1/chat/completions `
-  -Headers @{ Authorization = "Bearer demo-key" } `
-  -ContentType "application/json" `
-  -Body $body
+Invoke-RestMethod -Uri "http://localhost:8000/v1/chat/completions" -Method Post -Headers $headers -Body $body
 ```
 
-The bearer value is a gateway key from `CODEFLUX_GATEWAY_KEYS`, not an upstream provider key.
+#### Via Python (`openai` SDK):
+```python
+from openai import OpenAI
 
-## Run with Docker, Redis, and Ollama
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="demo-key",
+)
 
-### 1. Create and edit `.env`
-
-```powershell
-Copy-Item .env.example .env
+response = client.chat.completions.create(
+    model="gemini-tier",  # or "gpt-4-tier"
+    messages=[{"role": "user", "content": "Explain CodeFlux in one sentence."}],
+)
+print(response.choices[0].message.content)
 ```
 
-Add cloud credentials if desired. Ollama can act as the final fallback without an upstream API key.
+---
 
-### 2. Build and start the services
+## 🐳 Docker Setup (Alternative to Local)
+
+To run the entire stack (Gateway, Dashboard, Redis, and Ollama) in Docker containers:
 
 ```powershell
+# Build and start all services
 docker compose up --build -d
-```
 
-### 3. Download the configured Ollama model
-
-```powershell
+# (Optional) Download the local offline model in Ollama
 docker compose exec ollama ollama pull llama3.2
-```
 
-The initial model download may take several minutes.
-
-### 4. Check status and logs
-
-```powershell
+# Check status
 docker compose ps
-docker compose logs -f codeflux
 ```
 
-Press `Ctrl+C` to stop following logs; the containers remain running.
+- Open Dashboard: `http://localhost:8501`
+- Open API Docs: `http://localhost:8000/docs`
+- Stop containers: `docker compose down`
 
-### 5. Stop the stack
+---
+
+## 📋 Using the Persistent Work Planner
+
+1. Open **`http://localhost:8501`** and go to the **Work planner** tab.
+2. In the sidebar under **Connection**, select an **AI route** (e.g. `gemini-tier` or `gpt-4-tier`).
+3. Enter a **Project title** and a detailed **Master prompt**.
+4. Click **Generate checklist**: CodeFlux routes the request to an AI to produce a structured checklist.
+5. Check off items as you complete them, or add new manual items.
+6. Click **Do the work**: CodeFlux sends the original request along with the persisted checklist progress to produce the deliverable. If one provider runs out of quota, failover automatically hands the context to the next provider.
+
+---
+
+## 🧪 Running Tests
+
+To run the full automated test suite (covering request normalization, LRU key pool rotation, failover logic, circuit breakers, and workflows):
 
 ```powershell
-docker compose down
+pytest -q
 ```
 
-To perform a complete reset, including the database and downloaded models:
+---
 
-```powershell
-docker compose down -v
-```
+## 🔍 Troubleshooting & FAQ
 
-The `-v` command permanently removes persisted Docker volumes. Redis is included for future distributed state support; the reference implementation currently keeps circuit and rate state in-process.
+### 1. `503 Service Unavailable: all providers failed`
+- **Cause A (Key Selection)**: Verify your keys are in the **Quota pool** tab and that your chosen route has a provider you provided keys for.
+- **Cause B (Quota Exhausted)**: If OpenAI returns `429 insufficient_quota`, CodeFlux will automatically fail over to Gemini as long as you have added a Gemini key.
+- **Cause C (Deprecated Model)**: Google frequently updates model names. Ensure `config/routes.yaml` uses active models like `gemini-3.1-flash-lite` or `gemini-flash-latest` rather than deprecated versions.
 
-## Common startup problems
+### 2. `InvalidToken / Decryption Failure`
+- **Cause**: If you modify `CODEFLUX_MASTER_SECRET` in `.env` after adding keys, the existing database cannot decrypt them. Delete the old database file at `data/codeflux.db` and re-add your keys.
 
-- `401 invalid or missing CodeFlux API key`: use a key from `CODEFLUX_GATEWAY_KEYS` in `Authorization: Bearer ...`.
-- `all providers failed`: verify the route's `api_key_ref`, its matching `CODEFLUX_CREDENTIALS_JSON` entry, and the provider key.
-- Ollama fails during a native Python run: change `provider_base_urls.ollama` in `config/routes.yaml` from `http://ollama:11434/v1` to `http://localhost:11434/v1`.
-- Ollama model missing: run `ollama pull llama3.2` locally or use the Docker pull command above.
-- Port 8000 is occupied: set `CODEFLUX_PORT=8001` in `.env` and use port 8001 in requests.
-- Stored credentials cannot be decrypted: restore the original master secret or remove `data/codeflux.db` to create a fresh credential database.
+### 3. Port 8000 Conflict
+- If port 8000 is already in use by a background Docker container or previous process:
+  ```powershell
+  # Check what process is on port 8000
+  Get-NetTCPConnection -LocalPort 8000
+  # Stop the Docker container if needed
+  docker stop codeflux-codeflux-1
+  ```
 
-## Calling the gateway
+---
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer demo-key" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4-tier","messages":[{"role":"user","content":"Hello"}]}'
-```
+## 📖 Deep Dive Architecture
 
-Set `"stream": true` for OpenAI SSE chunks. Gemini clients can call `POST /v1beta/models/gemini-tier:generateContent`. Other endpoints are `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/health`, `/health/providers`, and `/metrics`. Health itself is public for container probes; detailed health and metrics require a gateway key.
-
-## Routes and failover
-
-Edit [config/routes.yaml](config/routes.yaml). A logical model alias owns a candidate list, overall timeout, strategy, optional allowed teams, PII toggle, and optional Ollama fallback. Supported strategies are:
-
-- `priority`: configured order.
-- `round-robin`: rotate the first candidate per request, retaining the rest for failover.
-- `least-latency`: lowest rolling mean latency first; unseen providers are tried later.
-- `weighted-random`: weighted sampling without replacement.
-
-Each attempt selects the least-recently-used eligible key. Failures increment the provider+key circuit. At the threshold it opens; after cooldown exactly one half-open probe is allowed. A success closes it. Streaming can fail over until the first upstream chunk is received; once bytes reach the client, HTTP cannot transparently switch streams.
-
-Routes with `allowed_teams` enforce lightweight RBAC. A gateway API key maps to a team through `CODEFLUX_GATEWAY_KEYS`. Upstream and gateway keys are separate.
-
-## Adding a provider
-
-If it implements the OpenAI API shape, add its name and base URL to `DEFAULT_BASE_URLS` in `codeflux/adapters/registry.py`, or set the URL under `provider_base_urls` in YAML and register it during app setup. For a native protocol:
-
-1. Implement `ProviderAdapter` from `codeflux/adapters/base.py`.
-2. Translate `NormalizedRequest` into the native payload and return `NormalizedResponse`.
-3. Implement the streaming and health methods.
-4. Register the instance in `AdapterRegistry` and add mocked conversion tests.
-
-Azure deployments often require an `api-version` and deployment-specific URL; configure its base URL for your deployment. Direct Bedrock SigV4 is deliberately outside the small core—point `bedrock` to an OpenAI-compatible Bedrock bridge, or add a boto3-backed native adapter using the same contract.
-
-## PII, accounting, and rate limits
-
-Set `pii_redaction: true` on a route. With the `pii` extra installed, Presidio performs analysis/anonymization; otherwise a deterministic fallback masks email and card-like patterns. Responses are not un-redacted because generated text cannot safely be mapped to arbitrary originals.
-
-Successful calls create usage rows with team, provider, key reference and token counts. Prometheus counters expose requests, errors, latency, failovers, tokens and circuits. Key state understands common `x-ratelimit-*` fields through `KeyPool.update_limits`; adapters can feed response headers into it as providers expose consistent formats. The in-memory state is intentionally replaceable with Redis for multiple replicas.
-
-## Tests
-
-```bash
-pytest
-```
-
-Tests cover OpenAI/Gemini normalization, priority failover, circuit closed/open/half-open transitions, and LRU key rotation. All provider behavior is mocked; tests make no network calls.
-
-## Project layout
-
-```text
-codeflux/
-  adapters/       provider protocol, Gemini and OpenAI-compatible adapters
-  app.py          HTTP endpoints and lifecycle wiring
-  normalization.py canonical input/output conversion
-  router.py       strategies, retry budget and failover
-  circuit.py      per-provider+key state machine
-  keys.py         rate-aware LRU key pool
-  storage.py      encrypted credentials and usage persistence
-  auth.py, pii.py, metrics.py
-config/routes.yaml
-tests/
-```
-
-## Assumptions and scope
-
-- SQLite and one process are the default; interfaces are kept small so Postgres/Redis can replace local state.
-- Cost defaults to zero because prices change frequently; populate a pricing table before using cost accounting for billing.
-- Several vendors support only a subset of OpenAI operations, so route embeddings and legacy completions only to providers/models that actually expose them.
-- Presidio, Redis, direct AWS credentials/KMS, and a graphical admin dashboard remain optional deployment extensions. Operational data is already available through health, metrics, logs and SQLite.
+For a comprehensive explanation of every component, request flows, encryption details, and tech stack choices, see **[`explain.md`](explain.md)**.

@@ -47,6 +47,7 @@ class NormalizedResponse(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     embeddings: list[list[float]] | None = None
     raw: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    rate_limit_headers: dict[str, str] = Field(default_factory=dict, exclude=True)
     created: int = Field(default_factory=lambda: int(time.time()))
 
 

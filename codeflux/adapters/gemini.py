@@ -49,7 +49,8 @@ class GeminiAdapter:
         content = "".join(part.get("text", "") for part in candidate.get("content", {}).get("parts", []))
         metadata = data.get("usageMetadata", {})
         usage = Usage(prompt_tokens=metadata.get("promptTokenCount", 0), completion_tokens=metadata.get("candidatesTokenCount", 0), total_tokens=metadata.get("totalTokenCount", 0))
-        return NormalizedResponse(model=request.model, content=content, finish_reason=candidate.get("finishReason", "STOP").lower(), usage=usage, raw=data)
+        limit_headers = {key.lower(): value for key, value in response.headers.items() if key.lower().startswith("x-ratelimit-")}
+        return NormalizedResponse(model=request.model, content=content, finish_reason=candidate.get("finishReason", "STOP").lower(), usage=usage, raw=data, rate_limit_headers=limit_headers)
 
     async def stream_chat_completion(self, request: NormalizedRequest, api_key: str | None = None) -> AsyncIterator[StreamChunk]:
         # Gemini SSE formats vary; a non-buffering implementation can be added without changing the router contract.
@@ -63,4 +64,3 @@ class GeminiAdapter:
             return ProviderHealth(provider=self.name, state=HealthState.healthy if response.status_code < 500 else HealthState.degraded, latency_ms=(time.monotonic() - started) * 1000)
         except httpx.HTTPError as exc:
             return ProviderHealth(provider=self.name, state=HealthState.unavailable, detail=str(exc))
-

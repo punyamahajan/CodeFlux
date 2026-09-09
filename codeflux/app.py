@@ -118,6 +118,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def metrics(_: str = Depends(authenticate)):
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    @app.get("/dashboard/status")
+    async def dashboard_status(request: Request, _: str = Depends(authenticate)):
+        router = request.app.state.router
+        return {
+            "last_route": router.last_route,
+            "limits": router.key_pool.snapshot(),
+            "circuits": request.app.state.breaker.snapshot(),
+        }
+
     return app
 
 

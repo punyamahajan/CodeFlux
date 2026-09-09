@@ -19,6 +19,7 @@ class Adapter:
 
 class Keys:
     async def select(self, provider, preferred_ref=None): return preferred_ref, "secret"
+    async def update_limits(self, reference, headers): pass
 
 
 class Usage:
@@ -35,4 +36,3 @@ async def test_priority_failover():
     assert result.response.content == "ok"
     assert result.provider == "good"
     assert result.attempts == ["bad", "good"]
-

@@ -24,7 +24,12 @@ class KeyPool:
         self._lock = asyncio.Lock()
 
     async def select(self, provider: str, preferred_ref: str | None = None) -> tuple[str | None, str | None]:
-        references = [preferred_ref] if preferred_ref else await self.vault.references(provider)
+        # A configured reference is the preferred seed key, not an instruction to
+        # ignore keys later contributed to the provider's shared pool.
+        references = await self.vault.references(provider)
+        if preferred_ref and preferred_ref in references:
+            references.remove(preferred_ref)
+            references.insert(0, preferred_ref)
         references = [ref for ref in references if ref]
         if not references:
             return None, None
@@ -32,11 +37,24 @@ class KeyPool:
         async with self._lock:
             states = [self._states.setdefault(ref, KeyState(ref)) for ref in references]
             eligible = [s for s in states if s.remaining_requests != 0 or s.reset_at <= now]
-            if not eligible:
-                return None, None
-            state = min(eligible, key=lambda item: item.last_used)
-            state.last_used = now
-        return state.reference, await self.vault.get(state.reference)
+            while eligible:
+                state = min(eligible, key=lambda item: item.last_used)
+                eligible.remove(state)
+                key = await self.vault.get(state.reference)
+                if key:
+                    state.last_used = now
+                    return state.reference, key
+        return None, None
+
+    def snapshot(self) -> list[dict[str, int | float | str | None]]:
+        return [
+            {
+                "reference": state.reference,
+                "remaining_requests": state.remaining_requests,
+                "reset_in_seconds": max(0.0, state.reset_at - time.monotonic()) if state.reset_at else None,
+            }
+            for state in self._states.values()
+        ]
 
     async def update_limits(self, reference: str | None, headers: dict[str, str]) -> None:
         if not reference:
@@ -52,4 +70,3 @@ class KeyPool:
                     state.reset_at = time.monotonic() + float(reset.rstrip("s"))
                 except ValueError:
                     pass
-

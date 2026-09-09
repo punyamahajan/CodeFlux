@@ -15,7 +15,15 @@ routes:
       - provider: openai
         model: gpt-4o-mini
         api_key_ref: openai-primary
-        timeout_seconds: 20
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-3.1-flash-lite
+        api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-flash-latest
+        api_key_ref: gemini-primary
+        timeout_seconds: 15
       - provider: groq
         model: llama-3.3-70b-versatile
         api_key_ref: groq-primary
@@ -24,11 +32,20 @@ routes:
     ollama_fallback_timeout_seconds: 120
 
   gemini-tier:
-    strategy: least-latency
+    strategy: priority
     candidates:
       - provider: gemini
-        model: gemini-2.0-flash
+        model: gemini-3.1-flash-lite
         api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-flash-latest
+        api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
+        timeout_seconds: 15
       - provider: openrouter
         model: google/gemini-2.0-flash-001
         api_key_ref: openrouter-primary

@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
+    dashboard_password: str = ""
+    dashboard_gateway_url: str = "http://localhost:8000"
 
     def client_keys(self) -> dict[str, str]:
         result: dict[str, str] = {}

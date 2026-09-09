@@ -6,12 +6,27 @@ services:
     env_file: .env
     volumes:
       - ./config:/app/config:ro
-      - codeflux-data:/app/data
+      - ./data:/app/data
     depends_on:
       redis:
         condition: service_healthy
       ollama:
         condition: service_started
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      CODEFLUX_DASHBOARD_GATEWAY_URL: http://codeflux:8000
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    depends_on:
+      - codeflux
     restart: unless-stopped
 
   redis:
@@ -33,7 +48,6 @@ services:
       - ollama-data:/root/.ollama
 
 volumes:
-  codeflux-data:
   redis-data:
   ollama-data:
 
