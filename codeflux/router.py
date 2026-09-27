@@ -157,10 +157,30 @@ class RoutingEngine:
                 await self.circuits.success(identity)
                 self.last_route = {"alias": request.model, "provider": candidate.provider, "model": candidate.model, "key_ref": key_ref, "team": team, "attempts": list(attempts), "streaming": True}
 
-                async def with_first(initial=first, upstream=stream) -> AsyncIterator[StreamChunk]:
-                    yield initial
-                    async for chunk in upstream:
-                        yield chunk
+                async def with_first(
+                    initial=first,
+                    upstream=stream,
+                    provider=candidate.provider,
+                    selected_key_ref=key_ref,
+                    selected_model=candidate.model,
+                    selected_team=team,
+                ) -> AsyncIterator[StreamChunk]:
+                    final_usage = initial.usage
+                    try:
+                        yield initial
+                        async for chunk in upstream:
+                            if chunk.usage is not None:
+                                final_usage = chunk.usage
+                            yield chunk
+                    finally:
+                        if final_usage is not None:
+                            TOKENS.labels(provider, "prompt", selected_key_ref or "anonymous").inc(final_usage.prompt_tokens)
+                            TOKENS.labels(provider, "completion", selected_key_ref or "anonymous").inc(final_usage.completion_tokens)
+                            await self.usage.record(
+                                team=selected_team, provider=provider, key_ref=selected_key_ref,
+                                model=selected_model, prompt_tokens=final_usage.prompt_tokens,
+                                completion_tokens=final_usage.completion_tokens,
+                            )
 
                 return StreamingRoutingResult(with_first(), candidate.provider, attempts)
             except Exception as exc:  # noqa: BLE001 - adapters may raise vendor SDK exceptions

@@ -56,6 +56,7 @@ class StreamChunk(BaseModel):
     model: str
     content: str | None = None
     finish_reason: str | None = None
+    usage: Usage | None = None
 
 
 class HealthState(str, Enum):

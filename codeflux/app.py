@@ -19,7 +19,7 @@ from codeflux.normalization import gemini_request, openai_request, to_gemini, to
 from codeflux.pii import PIIRedactor
 from codeflux.router import RoutingEngine
 from codeflux.schemas import GeminiRequest
-from codeflux.storage import CredentialVault, Database, UsageRepository
+from codeflux.storage import ClientKeyRepository, CredentialVault, Database, UsageRepository
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,7 +47,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.registry = registry
         app.state.breaker = breaker
         app.state.client_keys = settings.client_keys()
-        app.state.router = RoutingEngine(config, registry, KeyPool(vault), breaker, UsageRepository(database.sessions), PIIRedactor())
+        app.state.client_key_repository = ClientKeyRepository(database.sessions, settings.master_secret)
+        app.state.usage_repository = UsageRepository(database.sessions)
+        app.state.router = RoutingEngine(config, registry, KeyPool(vault), breaker, app.state.usage_repository, PIIRedactor())
         yield
         await client.aclose()
         await database.close()
@@ -75,6 +77,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not route.allowed_teams or team in route.allowed_teams:
                 data.append({"id": alias, "object": "model", "owned_by": "codeflux", "providers": sorted({c.provider for c in route.candidates})})
         return {"object": "list", "data": data}
+
+    @app.get("/v1/me")
+    async def me(request: Request, team: str = Depends(authenticate)):
+        used = await request.app.state.usage_repository.tokens_this_month(team)
+        limit = request.state.client_identity.get("monthly_token_limit")
+        return {
+            "team": team,
+            "name": request.state.client_identity.get("name"),
+            "tokens_used_this_month": used,
+            "monthly_token_limit": limit,
+            "tokens_left_this_month": None if limit is None else max(0, limit - used),
+        }
+
+    @app.get("/v1/usage")
+    async def usage(request: Request, team: str = Depends(authenticate)):
+        return await request.app.state.usage_repository.summary(team)
 
     async def handle_openai(request: Request, operation: str, team: str):
         try:

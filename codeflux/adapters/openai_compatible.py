@@ -94,6 +94,7 @@ class OpenAICompatibleAdapter:
     ) -> AsyncIterator[StreamChunk]:
         path, payload = self._payload(request)
         payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
         async with self.client.stream(
             "POST", f"{self.base_url}{path}", json=payload, headers=self._headers(api_key)
         ) as response:
@@ -105,10 +106,16 @@ class OpenAICompatibleAdapter:
                     continue
                 data = json.loads(line[6:])
                 choice = data.get("choices", [{}])[0]
+                usage_data = data.get("usage")
                 yield StreamChunk(
                     id=data.get("id", ""), model=data.get("model", request.model),
                     content=choice.get("delta", {}).get("content") or choice.get("text"),
                     finish_reason=choice.get("finish_reason"),
+                    usage=Usage(
+                        prompt_tokens=usage_data.get("prompt_tokens", 0),
+                        completion_tokens=usage_data.get("completion_tokens", 0),
+                        total_tokens=usage_data.get("total_tokens", 0),
+                    ) if usage_data else None,
                 )
 
     async def health_check(self) -> ProviderHealth:

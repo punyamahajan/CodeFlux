@@ -9,4 +9,4 @@ def test_dashboard_renders(tmp_path, monkeypatch):
     app = AppTest.from_file(Path(__file__).parents[1] / "streamlit_app.py", default_timeout=10).run()
     assert not app.exception
     assert app.title[0].value == "CodeFlux control room"
-    assert len(app.tabs) == 3
+    assert len(app.tabs) == 4

@@ -14,4 +14,9 @@ async def test_workflow_progress_persists():
     assert saved["status"] == "completed"
     assert saved["result"] == "Done"
     assert [item["completed"] for item in saved["items"]] == [True, False, False]
+    await repository.delete_item(saved["items"][0]["id"])
+    after_item_deleted = (await repository.list())[0]
+    assert len(after_item_deleted["items"]) == 2
+    await repository.delete(workflow_id)
+    assert len(await repository.list()) == 0
     await database.close()

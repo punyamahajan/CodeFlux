@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cryptography.fernet import Fernet
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, select
+from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    delete,
+    func,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -36,6 +49,19 @@ class UsageRecord(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class ClientApiKey(Base):
+    __tablename__ = "client_api_keys"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    team: Mapped[str] = mapped_column(String(100), index=True)
+    key_prefix: Mapped[str] = mapped_column(String(20), index=True)
+    key_digest: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    monthly_token_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Workflow(Base):
@@ -96,7 +122,7 @@ class CredentialVault:
                 return None
             try:
                 return self.fernet.decrypt(credential.encrypted_value.encode()).decode()
-            except Exception:
+            except InvalidToken:
                 return None
 
     async def references(self, provider: str) -> list[str]:
@@ -122,22 +148,44 @@ class UsageRepository:
             session.add(UsageRecord(team=team, provider=provider, key_ref=key_ref, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, estimated_cost=estimated_cost))
             await session.commit()
 
-    async def summary(self) -> dict[str, object]:
+    async def summary(self, team: str | None = None) -> dict[str, object]:
         async with self.sessions() as session:
+            filters = [] if team is None else [UsageRecord.team == team]
+            now = datetime.now(timezone.utc)
+            month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
             totals = (
                 await session.execute(
                     select(
                         func.count(UsageRecord.id),
                         func.coalesce(func.sum(UsageRecord.prompt_tokens), 0),
                         func.coalesce(func.sum(UsageRecord.completion_tokens), 0),
-                    )
+                    ).where(*filters)
                 )
             ).one()
-            latest = await session.scalar(select(UsageRecord).order_by(UsageRecord.timestamp.desc()).limit(1))
+            latest = await session.scalar(select(UsageRecord).where(*filters).order_by(UsageRecord.timestamp.desc()).limit(1))
+            by_team_rows = await session.execute(
+                select(
+                    UsageRecord.team,
+                    func.count(UsageRecord.id),
+                    func.coalesce(func.sum(UsageRecord.prompt_tokens + UsageRecord.completion_tokens), 0),
+                ).where(*filters).group_by(UsageRecord.team).order_by(UsageRecord.team)
+            )
+            monthly_rows = await session.execute(
+                select(
+                    UsageRecord.team,
+                    func.coalesce(func.sum(UsageRecord.prompt_tokens + UsageRecord.completion_tokens), 0),
+                ).where(*filters, UsageRecord.timestamp >= month_start).group_by(UsageRecord.team)
+            )
+            monthly_by_team = {row[0]: int(row[1]) for row in monthly_rows}
             return {
                 "requests": totals[0],
                 "prompt_tokens": totals[1],
                 "completion_tokens": totals[2],
+                "total_tokens": totals[1] + totals[2],
+                "by_team": [
+                    {"team": row[0], "requests": row[1], "total_tokens": row[2], "tokens_this_month": monthly_by_team.get(row[0], 0)}
+                    for row in by_team_rows
+                ],
                 "latest": None if latest is None else {
                     "provider": latest.provider,
                     "model": latest.model,
@@ -146,6 +194,69 @@ class UsageRepository:
                     "timestamp": latest.timestamp.isoformat(),
                 },
             }
+
+    async def tokens_this_month(self, team: str) -> int:
+        now = datetime.now(timezone.utc)
+        month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        async with self.sessions() as session:
+            value = await session.scalar(
+                select(func.coalesce(func.sum(UsageRecord.prompt_tokens + UsageRecord.completion_tokens), 0))
+                .where(UsageRecord.team == team, UsageRecord.timestamp >= month_start)
+            )
+            return int(value or 0)
+
+
+class ClientKeyRepository:
+    """Persistent CodeFlux client keys. Only an HMAC digest is stored."""
+
+    def __init__(self, sessions: async_sessionmaker[AsyncSession], master_secret: str):
+        self.sessions = sessions
+        self.secret = master_secret.encode()
+
+    def _digest(self, value: str) -> str:
+        return hmac.new(self.secret, value.encode(), hashlib.sha256).hexdigest()
+
+    async def create(self, name: str, team: str, monthly_token_limit: int | None = None) -> str:
+        raw = f"cf_{secrets.token_urlsafe(32)}"
+        async with self.sessions() as session:
+            session.add(ClientApiKey(
+                name=name,
+                team=team,
+                key_prefix=raw[:11],
+                key_digest=self._digest(raw),
+                monthly_token_limit=monthly_token_limit,
+            ))
+            await session.commit()
+        return raw
+
+    async def authenticate(self, value: str) -> dict[str, object] | None:
+        digest = self._digest(value)
+        async with self.sessions() as session:
+            item = await session.scalar(
+                select(ClientApiKey).where(ClientApiKey.key_digest == digest, ClientApiKey.active.is_(True))
+            )
+            if item is None:
+                return None
+            item.last_used_at = datetime.now(timezone.utc)
+            await session.commit()
+            return {"id": item.id, "name": item.name, "team": item.team, "monthly_token_limit": item.monthly_token_limit}
+
+    async def list(self) -> list[dict[str, object]]:
+        async with self.sessions() as session:
+            values = await session.scalars(select(ClientApiKey).order_by(ClientApiKey.created_at.desc()))
+            return [{
+                "id": item.id, "name": item.name, "team": item.team,
+                "key_prefix": f"{item.key_prefix}…", "monthly_token_limit": item.monthly_token_limit,
+                "active": item.active, "created_at": item.created_at.isoformat(),
+                "last_used_at": item.last_used_at.isoformat() if item.last_used_at else None,
+            } for item in values]
+
+    async def revoke(self, key_id: int) -> None:
+        async with self.sessions() as session:
+            item = await session.get(ClientApiKey, key_id)
+            if item:
+                item.active = False
+                await session.commit()
 
 
 class WorkflowRepository:
@@ -228,4 +339,23 @@ class WorkflowRepository:
             if workflow:
                 workflow.result, workflow.status = result, "completed"
                 workflow.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    async def delete(self, workflow_id: int) -> None:
+        async with self.sessions() as session:
+            await session.execute(delete(ChecklistItem).where(ChecklistItem.workflow_id == workflow_id))
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow:
+                await session.delete(workflow)
+            await session.commit()
+
+    async def delete_item(self, item_id: int) -> None:
+        async with self.sessions() as session:
+            item = await session.get(ChecklistItem, item_id)
+            if item:
+                workflow_id = item.workflow_id
+                await session.delete(item)
+                workflow = await session.get(Workflow, workflow_id)
+                if workflow:
+                    workflow.updated_at = datetime.now(timezone.utc)
             await session.commit()

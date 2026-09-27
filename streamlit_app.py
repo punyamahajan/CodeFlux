@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import importlib
 import json
 import re
 import uuid
@@ -13,8 +14,18 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+import codeflux.storage
+
+importlib.reload(codeflux.storage)
+
 from codeflux.config import Settings, load_config
-from codeflux.storage import CredentialVault, Database, UsageRepository, WorkflowRepository
+from codeflux.storage import (
+    ClientKeyRepository,
+    CredentialVault,
+    Database,
+    UsageRepository,
+    WorkflowRepository,
+)
 
 st.set_page_config(page_title="CodeFlux control room", page_icon=":material/hub:", layout="wide")
 
@@ -41,11 +52,18 @@ async def with_storage(action: str, *args: Any) -> Any:
     await database.initialize()
     try:
         if action == "usage":
-            return await UsageRepository(database.sessions).summary()
+            return await UsageRepository(database.sessions).summary(*args)
         if action == "credentials":
             return await CredentialVault(database.sessions, settings.master_secret).list_metadata()
         if action == "put_credential":
             return await CredentialVault(database.sessions, settings.master_secret).put(*args)
+        client_keys = ClientKeyRepository(database.sessions, settings.master_secret)
+        if action == "client_keys":
+            return await client_keys.list()
+        if action == "create_client_key":
+            return await client_keys.create(*args)
+        if action == "revoke_client_key":
+            return await client_keys.revoke(*args)
         workflows = WorkflowRepository(database.sessions)
         return await getattr(workflows, action)(*args)
     finally:
@@ -56,10 +74,17 @@ def gateway_get(path: str) -> dict[str, Any]:
     response = httpx.get(
         f"{gateway_base_url()}{path}",
         headers={"Authorization": f"Bearer {st.session_state.gateway_key}"},
-        timeout=5,
+        timeout=2,
     )
     response.raise_for_status()
     return response.json()
+
+
+def current_identity() -> dict[str, Any] | None:
+    try:
+        return gateway_get("/v1/me")
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def ask_gateway(model: str, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
@@ -100,7 +125,7 @@ if "gateway_url" not in st.session_state:
         settings, "dashboard_gateway_url", f"http://localhost:{settings.port}"
     )
 if "gateway_key" not in st.session_state:
-    st.session_state.gateway_key = next(iter(settings.client_keys()), "demo-key")
+    st.session_state.gateway_key = ""
 if "active_route" not in st.session_state:
     st.session_state.active_route = next(iter(config.routes), "")
 
@@ -123,15 +148,22 @@ with st.sidebar:
     st.selectbox("AI route", list(config.routes), key="active_route")
     st.caption("The dashboard is an administrator interface. Do not expose it publicly without authentication and TLS.")
 
+identity = current_identity() if st.session_state.gateway_key else None
+if st.session_state.gateway_key and identity is None:
+    st.warning("That CodeFlux API key could not be verified. Check the key and gateway URL.", icon=":material/key_off:")
+if identity:
+    with st.sidebar:
+        st.success(f"Signed in to team: {identity['team']}", icon=":material/verified_user:")
+
 st.title("CodeFlux control room", icon=":material/hub:")
 st.caption("Plan work once, retain progress across provider changes, and combine trusted API-key quotas.")
 
-overview_tab, workflow_tab, pool_tab = st.tabs(
-    [":material/monitoring: Overview", ":material/checklist: Work planner", ":material/key: Quota pool"]
+overview_tab, workflow_tab, pool_tab, access_tab = st.tabs(
+    [":material/monitoring: Overview", ":material/checklist: Work planner", ":material/key: Quota pool", ":material/group: Team access"]
 )
 
 with overview_tab:
-    usage = run_async(with_storage("usage"))
+    usage = run_async(with_storage("usage", None if identity and identity["team"] == "admin" else (identity or {}).get("team")))
     try:
         live = gateway_get("/dashboard/status")
         online = True
@@ -148,8 +180,17 @@ with overview_tab:
     with st.container(horizontal=True):
         st.metric("Prompt tokens", usage["prompt_tokens"], border=True)
         st.metric("Completion tokens", usage["completion_tokens"], border=True)
+        st.metric("Total tokens used", usage["total_tokens"], border=True)
         known = sum(1 for item in live.get("limits", []) if item.get("remaining_requests") is not None)
         st.metric("Keys with known request limit", known, border=True)
+    if identity:
+        used_this_month = int(identity.get("tokens_used_this_month", 0))
+        left_this_month = identity.get("tokens_left_this_month")
+        budget_text = "unlimited" if left_this_month is None else f"{int(left_this_month):,} left"
+        st.caption(f"Your team has used **{used_this_month:,} tokens** this calendar month · **{budget_text}** on this key's budget.")
+    if usage.get("by_team") and identity and identity["team"] == "admin":
+        st.subheader("Usage by team", icon=":material/groups:")
+        st.dataframe(pd.DataFrame(usage["by_team"]), hide_index=True)
     limits = live.get("limits", [])
     if limits:
         st.dataframe(pd.DataFrame(limits).fillna("Unknown"), hide_index=True)
@@ -165,10 +206,21 @@ with workflow_tab:
         title = st.text_input("Project title", placeholder="Professor demo")
         master_prompt = st.text_area(
             "Master prompt",
-            height=160,
+            height=130,
             placeholder="Describe the complete outcome, constraints, audience, and definition of done.",
         )
-        generate = st.form_submit_button("Generate checklist", type="primary", icon=":material/auto_awesome:")
+        col_gen, col_manual = st.columns([1, 1])
+        with col_gen:
+            generate = st.form_submit_button("Generate checklist with AI", type="primary", icon=":material/auto_awesome:")
+        with col_manual:
+            create_manual = st.form_submit_button("Create empty project", icon=":material/add:")
+    if create_manual:
+        if not title.strip():
+            st.error("Add a title for your project.")
+        else:
+            workflow_id = run_async(with_storage("create", title.strip(), master_prompt.strip() or "Manual project", []))
+            st.session_state.selected_workflow = workflow_id
+            st.rerun()
     if generate:
         if not title.strip() or not master_prompt.strip():
             st.error("Add both a title and a master prompt.")
@@ -193,21 +245,59 @@ with workflow_tab:
     else:
         workflow_by_id = {item["id"]: item for item in workflows}
         default_id = st.session_state.get("selected_workflow", workflows[0]["id"])
-        selected_id = st.selectbox(
-            "Open project", list(workflow_by_id), index=list(workflow_by_id).index(default_id) if default_id in workflow_by_id else 0,
-            format_func=lambda value: workflow_by_id[value]["title"],
-        )
+        if default_id not in workflow_by_id:
+            default_id = workflows[0]["id"]
+
+        col_select, col_del = st.columns([4, 1])
+        with col_select:
+            selected_id = st.selectbox(
+                "Open project", list(workflow_by_id), index=list(workflow_by_id).index(default_id),
+                format_func=lambda value: workflow_by_id[value]["title"],
+            )
+        with col_del:
+            st.write("")
+            st.write("")
+            if st.button("Delete project", type="secondary", icon=":material/delete:", key=f"del_proj_{selected_id}"):
+                run_async(with_storage("delete", selected_id))
+                st.session_state.pop("selected_workflow", None)
+                st.rerun()
+
         workflow = workflow_by_id[selected_id]
         completed = sum(item["completed"] for item in workflow["items"])
         total = len(workflow["items"])
         st.progress(completed / total if total else 0, text=f"{completed} of {total} tasks completed")
         with st.expander("Master prompt", icon=":material/description:"):
             st.write(workflow["master_prompt"])
+
+        if workflow["items"]:
+            col_check_all, col_uncheck_all, _ = st.columns([1, 1, 3])
+            with col_check_all:
+                if st.button("Check all", icon=":material/done_all:", key=f"check_all_{selected_id}"):
+                    for item in workflow["items"]:
+                        if not item["completed"]:
+                            run_async(with_storage("set_item", item["id"], True))
+                            st.session_state[f"item_{item['id']}"] = True
+                    st.rerun()
+            with col_uncheck_all:
+                if st.button("Uncheck all", icon=":material/remove_done:", key=f"uncheck_all_{selected_id}"):
+                    for item in workflow["items"]:
+                        if item["completed"]:
+                            run_async(with_storage("set_item", item["id"], False))
+                            st.session_state[f"item_{item['id']}"] = False
+                    st.rerun()
+
         for item in workflow["items"]:
-            checked = st.checkbox(item["text"], value=item["completed"], key=f"item_{item['id']}")
-            if checked != item["completed"]:
-                run_async(with_storage("set_item", item["id"], checked))
-                st.rerun()
+            col_check, col_del_item = st.columns([10, 1])
+            with col_check:
+                checked = st.checkbox(item["text"], value=item["completed"], key=f"item_{item['id']}")
+                if checked != item["completed"]:
+                    run_async(with_storage("set_item", item["id"], checked))
+                    st.rerun()
+            with col_del_item:
+                if st.button("✕", key=f"del_item_{item['id']}", help="Delete item"):
+                    run_async(with_storage("delete_item", item["id"]))
+                    st.rerun()
+
         with st.form(f"add_item_{selected_id}"):
             new_item = st.text_input("Add another checklist item")
             add = st.form_submit_button("Add item", icon=":material/add:")
@@ -241,7 +331,9 @@ with pool_tab:
         api_key = st.text_input("Provider API key", type="password")
         save_key = st.form_submit_button("Encrypt and add to pool", type="primary", icon=":material/add:")
     if save_key:
-        if not contributor.strip() or not api_key.strip():
+        if not identity:
+            st.error("Enter a valid personal CodeFlux API key in the sidebar before contributing a provider key.")
+        elif not contributor.strip() or not api_key.strip():
             st.error("Contributor name and API key are required.")
         else:
             reference = f"{provider}-{re.sub(r'[^a-z0-9-]', '-', contributor.lower()).strip('-')}-{uuid.uuid4().hex[:6]}"
@@ -257,3 +349,43 @@ with pool_tab:
             st.dataframe(rows, hide_index=True)
     else:
         st.info("The encrypted key pool is empty.")
+
+with access_tab:
+    st.subheader("CodeFlux API access", icon=":material/admin_panel_settings:")
+    if not identity:
+        st.info("Enter a valid Gateway API key in the sidebar to see your usage or manage team access.")
+    elif identity["team"] != "admin":
+        team_usage = run_async(with_storage("usage", identity["team"]))
+        with st.container(horizontal=True):
+            st.metric("Team", identity["team"], border=True)
+            st.metric("Requests", team_usage["requests"], border=True)
+            st.metric("Tokens used", team_usage["total_tokens"], border=True)
+            remaining = identity.get("tokens_left_this_month")
+            st.metric("Tokens left this month", "Unlimited" if remaining is None else f"{int(remaining):,}", border=True)
+        st.code(f"CODEFLUX_BASE_URL={gateway_base_url()}/v1\nCODEFLUX_API_KEY=<your key>", language="dotenv")
+    else:
+        st.caption("Create a personal CodeFlux key for each teammate. The secret is shown once; CodeFlux stores only a one-way digest.")
+        with st.form("create_client_key", clear_on_submit=True):
+            member_name = st.text_input("Member name", placeholder="Alice")
+            team_name = st.text_input("Team", placeholder="engineering")
+            monthly_limit = st.number_input("Monthly token budget (0 = unlimited)", min_value=0, step=10_000)
+            create_key = st.form_submit_button("Create CodeFlux key", type="primary", icon=":material/key:")
+        if create_key:
+            if not member_name.strip() or not team_name.strip():
+                st.error("Member name and team are required.")
+            else:
+                secret = run_async(with_storage(
+                    "create_client_key", member_name.strip(), team_name.strip(),
+                    int(monthly_limit) or None,
+                ))
+                st.success("Key created. Copy it now; it cannot be displayed again.")
+                st.code(secret, language=None)
+        managed_keys = run_async(with_storage("client_keys"))
+        if managed_keys:
+            usage_by_team = {row["team"]: row["tokens_this_month"] for row in run_async(with_storage("usage"))["by_team"]}
+            rows = []
+            for item in managed_keys:
+                used = int(usage_by_team.get(item["team"], 0))
+                limit = item["monthly_token_limit"]
+                rows.append({**item, "tokens_used_this_month": used, "tokens_left_this_month": None if limit is None else max(0, int(limit) - used)})
+            st.dataframe(pd.DataFrame(rows), hide_index=True)

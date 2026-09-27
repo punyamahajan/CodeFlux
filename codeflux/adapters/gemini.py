@@ -55,7 +55,7 @@ class GeminiAdapter:
     async def stream_chat_completion(self, request: NormalizedRequest, api_key: str | None = None) -> AsyncIterator[StreamChunk]:
         # Gemini SSE formats vary; a non-buffering implementation can be added without changing the router contract.
         result = await self.chat_completion(request, api_key)
-        yield StreamChunk(id=result.id, model=result.model, content=result.content, finish_reason=result.finish_reason)
+        yield StreamChunk(id=result.id, model=result.model, content=result.content, finish_reason=result.finish_reason, usage=result.usage)
 
     async def health_check(self) -> ProviderHealth:
         started = time.monotonic()

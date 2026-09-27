@@ -1,242 +1,286 @@
-# CodeFlux ⚡
+# CodeFlux
 
-CodeFlux is a self-hosted multi-provider AI gateway and Streamlit control room. Applications call one OpenAI- or Gemini-compatible API while CodeFlux selects an upstream model, rotates a shared pool of encrypted credentials, and automatically fails over when a provider times out, rate-limits, or exhausts its quota.
+CodeFlux is a self-hosted AI gateway and team control room. Your applications call one OpenAI-compatible API while CodeFlux chooses an upstream provider, rotates encrypted provider credentials, fails over when a provider is unavailable, and records token usage by team.
 
-The control room adds a persistent, provider-independent **Work Planner**. A user enters a master prompt, an AI converts it into an actionable checklist, people can edit steps and mark progress, and **Do the work** executes against the current checklist state. Because progress is stored in SQLite instead of one provider's chat history, any subsequent provider can continue without losing context when a previous provider's quota is exhausted.
+The Streamlit control room lets teammates contribute provider keys, view usage, receive personal CodeFlux API keys with monthly budgets, and manage persistent AI-assisted work checklists.
 
----
+## Project overview
 
-## What Works Now
+```text
+Application / teammate
+        |
+        | CodeFlux API key
+        v
+FastAPI gateway :8000
+        |
+        +-- authenticate team and enforce monthly budget
+        +-- normalize OpenAI or Gemini requests
+        +-- select route, provider, and encrypted provider key
+        +-- fail over across candidates when necessary
+        +-- record usage in SQLite
+        |
+        v
+OpenAI / Gemini / Groq / OpenRouter / Ollama
 
-- **Universal API compatibility**: OpenAI-compatible chat completions (`/v1/chat/completions`), embeddings, legacy completions, models listing, and SSE streaming, plus native Gemini `generateContent`.
-- **Intelligent multi-candidate failover**: Cascades across providers (e.g. OpenAI → Gemini → Groq → local Ollama) with overall request deadline enforcement.
-- **Quota pool with LRU rotation**: Multiple contributors can add API keys for any provider. Keys are rotated by least-recently-used (LRU) order, and keys with observed rate limits (`x-ratelimit-*`) are automatically paused until their reported reset time.
-- **Zero-plaintext security**: All provider keys are encrypted at rest using AES (Fernet symmetric encryption) derived from your master secret. Plaintext keys are never shown again or leaked to clients.
-- **Client key authentication**: External clients use Gateway Keys (`CODEFLUX_GATEWAY_KEYS`), completely shielding your upstream provider API keys.
-- **In-memory circuit breakers**: Prevents cascading failures by opening circuits on consecutive provider errors and attempting half-open recovery after a cooldown.
-- **Prometheus telemetry & structured logs**: Real-time metrics at `/metrics` and structured JSON logs.
-- **Streamlit control room**: Dashboard showing live gateway status, circuit states, observed rate limits, and token usage, plus the persistent work planner and encrypted quota pool.
+Streamlit control room :8501 ---> same SQLite database
+```
 
----
+Main capabilities:
 
-## Current Logical Routes
+- OpenAI-compatible chat, completion, embedding, model-listing, and streaming endpoints.
+- Native Gemini `generateContent` endpoint.
+- Priority, round-robin, least-latency, and weighted-random routing.
+- Automatic provider failover and per-provider-key circuit breakers.
+- Encrypted shared provider-key pool with least-recently-used rotation.
+- Bootstrap gateway keys from `.env` and managed `cf_...` teammate keys stored as HMAC digests.
+- Per-team prompt, completion, total, and calendar-month token tracking.
+- Optional monthly token budgets for managed keys.
+- Prometheus metrics, structured logs, and a persistent work planner.
 
-Routes are defined in [`config/routes.yaml`](config/routes.yaml):
+For the complete architecture and request lifecycle, see [explain.md](explain.md).
 
-| Route Alias | Strategy | Active Candidates & Failover Order |
-| :--- | :--- | :--- |
-| `gpt-4-tier` | Priority | 1. OpenAI `gpt-4o-mini`<br>2. Gemini `gemini-3.1-flash-lite`<br>3. Gemini `gemini-flash-latest`<br>4. Groq `llama-3.3-70b-versatile`<br>5. Ollama `llama3.2` *(fallback)* |
-| `gemini-tier` | Priority | 1. Gemini `gemini-3.1-flash-lite`<br>2. Gemini `gemini-flash-latest`<br>3. OpenAI `gpt-4o-mini`<br>4. OpenRouter `google/gemini-2.0-flash-001`<br>5. Ollama `llama3.2` *(fallback)* |
-| `embeddings` | Round-robin | 1. OpenAI `text-embedding-3-small` |
+## Requirements
 
----
+- Python 3.10 or newer
+- Git
+- At least one supported provider API key, or a local Ollama installation
+- Docker Desktop only if you prefer Docker Compose
 
-## 🚀 How to Start the Project (Step-by-Step Plan)
+## Start locally
 
-### Prerequisites
-- **Python 3.10+** installed
-- **Git** installed
-- An API key from **Google AI Studio** (Gemini), **OpenAI**, or **Groq** (or a local **Ollama** instance)
-
----
-
-### Step 1: Clone and Set Up Virtual Environment
+### 1. Create the environment
 
 ```powershell
-# Navigate into the project folder
+git clone <your-repository-url>
 cd CodeFlux
-
-# Create a virtual environment
 python -m venv .venv
-
-# Activate the virtual environment
-# On Windows PowerShell:
 .\.venv\Scripts\Activate.ps1
-# On macOS / Linux:
-# source .venv/bin/activate
-
-# Upgrade pip and install dependencies in editable mode
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
----
+On macOS or Linux, activate with `source .venv/bin/activate`.
 
-### Step 2: Configure Environment Variables
-
-Create your `.env` file from the provided example:
+### 2. Create the configuration
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Ensure your `.env` contains:
+Edit `.env` and replace every placeholder secret:
 
 ```dotenv
-# Secret used to encrypt/decrypt pooled API keys in SQLite (keep this stable between runs!)
-CODEFLUX_MASTER_SECRET=replace-with-a-long-random-and-stable-secret
-
-# Client keys for accessing the gateway (Format: <key>:<team>)
-CODEFLUX_GATEWAY_KEYS=demo-key:demo,admin-key:admin
-
-# Password to log into the Streamlit dashboard
-CODEFLUX_DASHBOARD_PASSWORD=Punya@1806
-
-# Path to routes and SQLite database
+CODEFLUX_MASTER_SECRET=generate-a-long-random-and-stable-secret
+CODEFLUX_GATEWAY_KEYS=admin-bootstrap-key:admin
+CODEFLUX_DASHBOARD_PASSWORD=choose-a-strong-dashboard-password
+CODEFLUX_DASHBOARD_GATEWAY_URL=http://localhost:8000
 CODEFLUX_CONFIG_PATH=config/routes.yaml
 CODEFLUX_DATABASE_URL=sqlite+aiosqlite:///./data/codeflux.db
-
-# Host and port for the FastAPI gateway
+CODEFLUX_CREDENTIALS_JSON={}
 CODEFLUX_HOST=0.0.0.0
 CODEFLUX_PORT=8000
 ```
 
-> ⚠️ **Important**: Keep `CODEFLUX_MASTER_SECRET` stable. If you change this secret after adding keys, previously encrypted keys cannot be decrypted.
+Keep `CODEFLUX_MASTER_SECRET` stable and backed up. Changing it makes previously stored provider credentials impossible to decrypt.
 
----
+### 3. Start the gateway
 
-### Step 3: Start the Backend Gateway
-
-In **Terminal 1** (with `.venv` activated):
+Open the first terminal, activate the virtual environment, and run:
 
 ```powershell
 python -m codeflux
 ```
 
-The gateway starts on **`http://localhost:8000`**.
-- OpenAPI Docs: `http://localhost:8000/docs`
-- Health check: `http://localhost:8000/health`
-- Live metrics: `http://localhost:8000/metrics`
+Available URLs:
 
----
+- Gateway: `http://localhost:8000`
+- Health: `http://localhost:8000/health`
+- OpenAPI documentation: `http://localhost:8000/docs`
+- Prometheus metrics: `http://localhost:8000/metrics`
 
-### Step 4: Start the Streamlit Control Room
+### 4. Start the control room
 
-In **Terminal 2** (with `.venv` activated):
+Open a second terminal, activate the same environment, and run:
 
 ```powershell
-streamlit run streamlit_app.py
+streamlit run streamlit_app.py --server.address 0.0.0.0
 ```
 
-The dashboard opens in your browser at **`http://localhost:8501`**.
+Open `http://localhost:8501`, enter the dashboard password, then put the admin bootstrap key from `CODEFLUX_GATEWAY_KEYS` (`admin-key`) into the sidebar.
 
----
+### 5. Add a provider key
 
-### Step 5: Add Provider API Keys to the Quota Pool
+1. Open **Quota pool**.
+2. Enter a contributor name.
+3. Select a provider such as `gemini`, `openai`, or `groq`.
+4. Paste the provider API key and select **Encrypt and add to pool**.
 
-1. In the dashboard, click the **Quota pool** tab.
-2. Under **Contribute a provider key**:
-   - **Contributor name**: your name (e.g. `punya`)
-   - **Provider**: select `gemini` or `openai`
-   - **Provider API key**: paste your raw key
-3. Click **Encrypt and add to pool**.
-   - The key is immediately encrypted into `data/codeflux.db`.
-   - The plaintext is never stored or shown again.
-   - You can add multiple keys for the same provider to expand your daily quota!
+The provider key is encrypted before it is stored in `data/codeflux.db`. CodeFlux displays only its reference afterward.
 
----
+### 6. Test the API
 
-### Step 6: Test Your Gateway Key (`demo-key`)
-
-You can test that your gateway key works using PowerShell, Python, or curl:
-
-#### Via PowerShell:
 ```powershell
 $headers = @{
-    Authorization = "Bearer demo-key"
+    Authorization = "Bearer admin-bootstrap-key"
     "Content-Type" = "application/json"
 }
 $body = @{
     model = "gemini-tier"
     messages = @(
-        @{ role = "user"; content = "Say hello from CodeFlux!" }
+        @{ role = "user"; content = "Say hello from CodeFlux." }
     )
-} | ConvertTo-Json
+} | ConvertTo-Json -Depth 5
 
-Invoke-RestMethod -Uri "http://localhost:8000/v1/chat/completions" -Method Post -Headers $headers -Body $body
+Invoke-RestMethod `
+    -Uri "http://localhost:8000/v1/chat/completions" `
+    -Method Post `
+    -Headers $headers `
+    -Body $body
 ```
 
-#### Via Python (`openai` SDK):
+OpenAI Python clients can use CodeFlux by setting `base_url`:
+
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="demo-key",
+    api_key="admin-bootstrap-key",
 )
 
 response = client.chat.completions.create(
-    model="gemini-tier",  # or "gpt-4-tier"
+    model="gemini-tier",
     messages=[{"role": "user", "content": "Explain CodeFlux in one sentence."}],
 )
 print(response.choices[0].message.content)
 ```
 
----
+## Add teammates & multi-laptop setup (Same Wi-Fi)
 
-## 🐳 Docker Setup (Alternative to Local)
+To collaborate with teammates across two or more laptops on the same Wi-Fi:
 
-To run the entire stack (Gateway, Dashboard, Redis, and Ollama) in Docker containers:
+### 1. Laptop 1 (Host Server)
+Your laptop acts as the shared server hosting the gateway, database, and control room:
+1. Find your Wi-Fi IPv4 address:
+   ```powershell
+   (Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Wi-Fi").IPAddress
+   ```
+   *(e.g., `10.7.12.170` or `192.168.1.50`)*
+2. Start the gateway and dashboard:
+   ```powershell
+   python -m codeflux
+   streamlit run streamlit_app.py --server.address 0.0.0.0
+   ```
+3. Open `http://localhost:8501`, log in, and enter `admin-key` in the sidebar.
+4. Go to **Team access** > **Create a personal CodeFlux key**:
+   - Enter member name and team (e.g. `engineering`).
+   - Click **Create CodeFlux key** and copy the generated `cf_...` key.
+5. Share with your teammate:
+   - Dashboard URL: `http://<YOUR_WIFI_IP>:8501`
+   - Dashboard Password: (from your `.env`)
+   - Their personal CodeFlux key: `cf_...`
+
+### 2. Laptop 2 (Teammate)
+The teammate does **not** need to run servers. They simply connect to the Host:
+1. Connect to the same Wi-Fi network.
+2. Open browser at `http://<HOST_WIFI_IP>:8501` and enter the dashboard password.
+3. In the sidebar under **Connection**, enter their personal `cf_...` key.
+4. Go to **Quota pool** > enter contributor name, select provider (e.g. `gemini`), paste their provider API key, and click **Encrypt and add to pool**.
+5. Use CodeFlux in their local code / Python scripts:
+   ```python
+   from openai import OpenAI
+
+   client = OpenAI(
+       base_url="http://<HOST_WIFI_IP>:8000/v1",
+       api_key="cf_...",  # Their CodeFlux key
+   )
+
+   response = client.chat.completions.create(
+       model="gemini-tier",
+       messages=[{"role": "user", "content": "Hello from teammate laptop!"}],
+   )
+   print(response.choices[0].message.content)
+   ```
+
+### Are both laptops kept up to date?
+**Yes, 100% in real time.** All workflows, checklist progress, encrypted API keys, and token usage are stored in the single centralized SQLite database (`data/codeflux.db`) on the Host laptop. Whenever either teammate adds a key, checks off a task, or calls the API, both laptops immediately see the updated state.
+
+
+## Start with Docker Compose
 
 ```powershell
-# Build and start all services
+Copy-Item .env.example .env
+# Edit .env and replace all placeholder secrets first.
 docker compose up --build -d
-
-# (Optional) Download the local offline model in Ollama
-docker compose exec ollama ollama pull llama3.2
-
-# Check status
 docker compose ps
 ```
 
-- Open Dashboard: `http://localhost:8501`
-- Open API Docs: `http://localhost:8000/docs`
-- Stop containers: `docker compose down`
+Then open:
 
----
+- Dashboard: `http://localhost:8501`
+- API documentation: `http://localhost:8000/docs`
 
-## 📋 Using the Persistent Work Planner
+To use the Compose Ollama container as the fallback, change the `ollama` base URL in `config/routes.yaml` to `http://ollama:11434/v1`, restart the stack, and pull the configured model:
 
-1. Open **`http://localhost:8501`** and go to the **Work planner** tab.
-2. In the sidebar under **Connection**, select an **AI route** (e.g. `gemini-tier` or `gpt-4-tier`).
-3. Enter a **Project title** and a detailed **Master prompt**.
-4. Click **Generate checklist**: CodeFlux routes the request to an AI to produce a structured checklist.
-5. Check off items as you complete them, or add new manual items.
-6. Click **Do the work**: CodeFlux sends the original request along with the persisted checklist progress to produce the deliverable. If one provider runs out of quota, failover automatically hands the context to the next provider.
+```powershell
+docker compose exec ollama ollama pull llama3.2
+docker compose restart codeflux
+```
 
----
+Stop the stack without deleting persisted volumes:
 
-## 🧪 Running Tests
+```powershell
+docker compose down
+```
 
-To run the full automated test suite (covering request normalization, LRU key pool rotation, failover logic, circuit breakers, and workflows):
+## Useful API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Unauthenticated service health |
+| `GET` | `/health/providers` | Provider and circuit health |
+| `GET` | `/v1/models` | Routes available to the authenticated team |
+| `GET` | `/v1/me` | Current team and monthly budget usage |
+| `GET` | `/v1/usage` | Usage summary scoped to the authenticated team |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat |
+| `POST` | `/v1/completions` | OpenAI-compatible legacy completion |
+| `POST` | `/v1/embeddings` | OpenAI-compatible embeddings |
+| `POST` | `/v1beta/models/{model}:generateContent` | Gemini-compatible generation |
+| `GET` | `/metrics` | Prometheus metrics |
+
+All endpoints except `/health` require `Authorization: Bearer <codeflux-key>` or `X-API-Key: <codeflux-key>`.
+
+## Tests
 
 ```powershell
 pytest -q
+python -m ruff check codeflux streamlit_app.py tests
 ```
 
----
+## Deployment notes
 
-## 🔍 Troubleshooting & FAQ
+- Run CodeFlux on an always-on server or VM for team access.
+- Put the gateway and dashboard behind HTTPS and a reverse proxy.
+- Do not expose the SQLite file over a network filesystem.
+- Back up both `data/codeflux.db` and `CODEFLUX_MASTER_SECRET`.
+- Keep `.env` and `.streamlit/secrets.toml` out of source control.
+- The current dashboard password is a shared outer gate. Use organizational OIDC/SSO before a broad internet-facing rollout.
+- SQLite is appropriate for one CodeFlux instance. A multi-instance production deployment needs a shared database and distributed circuit/rate-limit state.
 
-### 1. `503 Service Unavailable: all providers failed`
-- **Cause A (Key Selection)**: Verify your keys are in the **Quota pool** tab and that your chosen route has a provider you provided keys for.
-- **Cause B (Quota Exhausted)**: If OpenAI returns `429 insufficient_quota`, CodeFlux will automatically fail over to Gemini as long as you have added a Gemini key.
-- **Cause C (Deprecated Model)**: Google frequently updates model names. Ensure `config/routes.yaml` uses active models like `gemini-3.1-flash-lite` or `gemini-flash-latest` rather than deprecated versions.
+## Troubleshooting
 
-### 2. `InvalidToken / Decryption Failure`
-- **Cause**: If you modify `CODEFLUX_MASTER_SECRET` in `.env` after adding keys, the existing database cannot decrypt them. Delete the old database file at `data/codeflux.db` and re-add your keys.
+### `401 invalid or missing CodeFlux API key`
 
-### 3. Port 8000 Conflict
-- If port 8000 is already in use by a background Docker container or previous process:
-  ```powershell
-  # Check what process is on port 8000
-  Get-NetTCPConnection -LocalPort 8000
-  # Stop the Docker container if needed
-  docker stop codeflux-codeflux-1
-  ```
+Confirm the bearer key is either present in `CODEFLUX_GATEWAY_KEYS` or was created in **Team access** and has not been revoked.
 
----
+### `429 monthly CodeFlux token budget exhausted`
 
-## 📖 Deep Dive Architecture
+The managed key's team has reached that key's configured monthly budget. An administrator must issue access with an appropriate budget.
 
-For a comprehensive explanation of every component, request flows, encryption details, and tech stack choices, see **[`explain.md`](explain.md)**.
+### `503 all providers failed`
+
+Confirm that the selected route has at least one provider with a valid key, that model names are current, and that Ollama is reachable if it is the fallback.
+
+### Stored provider keys no longer work
+
+If `CODEFLUX_MASTER_SECRET` changed, restore the original secret. Otherwise, remove the unusable database only if losing its stored workflows, usage, and credentials is acceptable, then add the keys again.
