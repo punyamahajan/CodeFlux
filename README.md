@@ -120,22 +120,23 @@ The provider key is encrypted before it is stored in `data/codeflux.db`. CodeFlu
 ### 6. Test the API
 
 ```powershell
-$headers = @{
-    Authorization = "Bearer admin-bootstrap-key"
-    "Content-Type" = "application/json"
-}
-$body = @{
-    model = "gemini-tier"
-    messages = @(
-        @{ role = "user"; content = "Say hello from CodeFlux." }
-    )
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod `
-    -Uri "http://localhost:8000/v1/chat/completions" `
-    -Method Post `
-    -Headers $headers `
-    -Body $body
+ $body = @{                                                                                                                                            
+        model = "gemini-tier"                                                                                                                             
+        messages = @(                                                                                                                                     
+            @{ role = "user"; content = "Say hello from CodeFlux." }                                                                                      
+        )                                                                                                                                                 
+    } | ConvertTo-Json -Depth 5                                                                                                                           
+                                                                                                                                                          
+    $params = @{                                                                                                                                          
+        Uri         = "http://localhost:8000/v1/chat/completions"                                                                                         
+        Method      = "Post"                                                                                                                              
+        Headers     = @{ Authorization = "Bearer admin-key" }                                                                                             
+        ContentType = "application/json"                                                                                                                  
+        Body        = $body                                                                                                                               
+    }                                                                                                                                                     
+                                                                                                                                                          
+    $response = Invoke-RestMethod @params                                                                                                                 
+    $response.choices[0].message.content
 ```
 
 OpenAI Python clients can use CodeFlux by setting `base_url`:
