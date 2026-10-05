@@ -33,7 +33,10 @@ class OpenAICompatibleAdapter:
 
     def _payload(self, request: NormalizedRequest) -> tuple[str, dict[str, Any]]:
         fields = request.model_dump(
-            include={"model", "temperature", "max_tokens", "top_p", "stop", "tools", "response_format"},
+            include={
+                "model", "temperature", "max_tokens", "top_p", "stop", "tools",
+                "tool_choice", "parallel_tool_calls", "response_format",
+            },
             exclude_none=True,
         )
         if request.operation == "embedding":
@@ -82,10 +85,12 @@ class OpenAICompatibleAdapter:
                 rate_limit_headers=limit_headers,
             )
         choice = data.get("choices", [{}])[0]
-        content = choice.get("text") if request.operation == "completion" else choice.get("message", {}).get("content")
+        message = choice.get("message", {})
+        content = choice.get("text") if request.operation == "completion" else message.get("content")
         return NormalizedResponse(
             id=data.get("id", f"chatcmpl-{uuid.uuid4().hex}"), model=data.get("model", request.model),
-            content=content or "", finish_reason=choice.get("finish_reason", "stop"), usage=usage, raw=data,
+            content=content, tool_calls=message.get("tool_calls"),
+            finish_reason=choice.get("finish_reason", "stop"), usage=usage, raw=data,
             created=data.get("created", int(time.time())), rate_limit_headers=limit_headers,
         )
 
@@ -106,10 +111,12 @@ class OpenAICompatibleAdapter:
                     continue
                 data = json.loads(line[6:])
                 choice = data.get("choices", [{}])[0]
+                delta = choice.get("delta", {})
                 usage_data = data.get("usage")
                 yield StreamChunk(
                     id=data.get("id", ""), model=data.get("model", request.model),
-                    content=choice.get("delta", {}).get("content") or choice.get("text"),
+                    content=delta.get("content") or choice.get("text"),
+                    tool_calls=delta.get("tool_calls"),
                     finish_reason=choice.get("finish_reason"),
                     usage=Usage(
                         prompt_tokens=usage_data.get("prompt_tokens", 0),

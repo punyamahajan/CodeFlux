@@ -13,6 +13,7 @@ class Message(BaseModel):
     content: str | list[dict[str, Any]] | None = None
     name: str | None = None
     tool_call_id: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class NormalizedRequest(BaseModel):
@@ -28,6 +29,8 @@ class NormalizedRequest(BaseModel):
     stop: str | list[str] | None = None
     stream: bool = False
     tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
     response_format: dict[str, Any] | None = None
     operation: Literal["chat", "completion", "embedding"] = "chat"
     client_format: Literal["openai", "gemini"] = "openai"
@@ -43,6 +46,7 @@ class NormalizedResponse(BaseModel):
     id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex}")
     model: str
     content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = "stop"
     usage: Usage = Field(default_factory=Usage)
     embeddings: list[list[float]] | None = None
@@ -55,6 +59,7 @@ class StreamChunk(BaseModel):
     id: str
     model: str
     content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
     usage: Usage | None = None
 
@@ -86,3 +91,7 @@ class GeminiRequest(BaseModel):
     contents: list[GeminiContent]
     systemInstruction: GeminiContent | None = None
     generationConfig: dict[str, Any] | None = None
+
+
+class IdeTaskCompletion(BaseModel):
+    result: str = Field(min_length=1)

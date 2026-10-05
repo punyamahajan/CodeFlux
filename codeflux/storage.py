@@ -18,7 +18,9 @@ from sqlalchemy import (
     Text,
     delete,
     func,
+    inspect,
     select,
+    text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -82,6 +84,7 @@ class ChecklistItem(Base):
     text: Mapped[str] = mapped_column(Text)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    model_route: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class Database:
@@ -94,6 +97,13 @@ class Database:
             Path(self.engine.url.database).parent.mkdir(parents=True, exist_ok=True)
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            columns = await connection.run_sync(
+                lambda sync_connection: {
+                    column["name"] for column in inspect(sync_connection).get_columns("checklist_items")
+                }
+            )
+            if "model_route" not in columns:
+                await connection.execute(text("ALTER TABLE checklist_items ADD COLUMN model_route VARCHAR(200)"))
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -263,13 +273,15 @@ class WorkflowRepository:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]):
         self.sessions = sessions
 
-    async def create(self, title: str, master_prompt: str, items: list[str]) -> int:
+    async def create(
+        self, title: str, master_prompt: str, items: list[str], model_route: str | None = None
+    ) -> int:
         async with self.sessions() as session:
             workflow = Workflow(title=title, master_prompt=master_prompt)
             session.add(workflow)
             await session.flush()
             session.add_all(
-                ChecklistItem(workflow_id=workflow.id, text=text, position=index)
+                ChecklistItem(workflow_id=workflow.id, text=text, position=index, model_route=model_route)
                 for index, text in enumerate(items)
             )
             await session.commit()
@@ -284,14 +296,17 @@ class WorkflowRepository:
                 result.append({
                     "id": workflow.id, "title": workflow.title, "master_prompt": workflow.master_prompt,
                     "status": workflow.status, "result": workflow.result,
-                    "items": [{"id": item.id, "text": item.text, "completed": item.completed} for item in items],
+                    "items": [
+                        {"id": item.id, "text": item.text, "completed": item.completed, "model_route": item.model_route}
+                        for item in items
+                    ],
                 })
             return result
 
-    async def add_item(self, workflow_id: int, text: str) -> None:
+    async def add_item(self, workflow_id: int, text: str, model_route: str | None = None) -> None:
         async with self.sessions() as session:
             position = await session.scalar(select(func.count(ChecklistItem.id)).where(ChecklistItem.workflow_id == workflow_id))
-            session.add(ChecklistItem(workflow_id=workflow_id, text=text, position=position or 0))
+            session.add(ChecklistItem(workflow_id=workflow_id, text=text, position=position or 0, model_route=model_route))
             workflow = await session.get(Workflow, workflow_id)
             if workflow:
                 workflow.updated_at = datetime.now(timezone.utc)
@@ -306,6 +321,83 @@ class WorkflowRepository:
                 if workflow:
                     workflow.updated_at = datetime.now(timezone.utc)
             await session.commit()
+
+    async def set_item_model(self, item_id: int, model_route: str) -> None:
+        async with self.sessions() as session:
+            item = await session.get(ChecklistItem, item_id)
+            if item:
+                item.model_route = model_route
+                workflow = await session.get(Workflow, item.workflow_id)
+                if workflow:
+                    workflow.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    async def next_ide_task(self, workflow_id: int) -> dict[str, object] | None:
+        async with self.sessions() as session:
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow is None:
+                raise ValueError("workflow not found")
+            items = list(
+                await session.scalars(
+                    select(ChecklistItem)
+                    .where(ChecklistItem.workflow_id == workflow_id)
+                    .order_by(ChecklistItem.position)
+                )
+            )
+            task = next((item for item in items if not item.completed), None)
+            if task is None:
+                return None
+            project_plan = "\n".join(
+                f"- [{'x' if item.completed else ' '}] {item.text}" for item in items
+            )
+            context = (
+                f"MASTER REQUEST:\n{workflow.master_prompt}\n\n"
+                f"SHARED PROJECT PLAN:\n{project_plan}\n\n"
+                f"YOUR ASSIGNED TASK:\n{task.text}\n\n"
+                f"OUTPUT FROM EARLIER TASKS:\n{workflow.result or 'No earlier task output.'}\n\n"
+                "Work in the current IDE workspace. Complete only the assigned task, use your available "
+                "file and terminal tools as needed, verify the result, and then report a concise summary."
+            )
+            return {
+                "workflow_id": workflow.id,
+                "workflow_title": workflow.title,
+                "task_id": task.id,
+                "task": task.text,
+                "model": task.model_route,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are the implementation agent for a CodeFlux project.",
+                    },
+                    {"role": "user", "content": context},
+                ],
+            }
+
+    async def complete_ide_task(self, workflow_id: int, item_id: int, result: str) -> dict[str, object]:
+        async with self.sessions() as session:
+            workflow = await session.get(Workflow, workflow_id)
+            item = await session.get(ChecklistItem, item_id)
+            if workflow is None or item is None or item.workflow_id != workflow_id:
+                raise ValueError("workflow task not found")
+            item.completed = True
+            section = f"## {item.text}\n\n{result.strip()}"
+            workflow.result = f"{workflow.result}\n\n{section}" if workflow.result else section
+            remaining = await session.scalar(
+                select(func.count(ChecklistItem.id)).where(
+                    ChecklistItem.workflow_id == workflow_id,
+                    ChecklistItem.completed.is_(False),
+                    ChecklistItem.id != item_id,
+                )
+            )
+            workflow.status = "completed" if not remaining else "in_progress"
+            workflow.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+            return {
+                "workflow_id": workflow_id,
+                "task_id": item_id,
+                "completed": True,
+                "workflow_status": workflow.status,
+            }
 
     async def save_result(self, workflow_id: int, result: str, status: str = "completed") -> None:
         async with self.sessions() as session:
@@ -324,8 +416,16 @@ class WorkflowRepository:
                 if item_id in existing:
                     item = existing.pop(item_id)
                     item.text, item.completed, item.position = str(value["text"]), bool(value["completed"]), position
+                    if "model_route" in value:
+                        item.model_route = str(value["model_route"]) if value["model_route"] else None
                 else:
-                    session.add(ChecklistItem(workflow_id=workflow_id, text=str(value["text"]), completed=bool(value["completed"]), position=position))
+                    session.add(ChecklistItem(
+                        workflow_id=workflow_id,
+                        text=str(value["text"]),
+                        completed=bool(value["completed"]),
+                        position=position,
+                        model_route=str(value["model_route"]) if value.get("model_route") else None,
+                    ))
             for item in existing.values():
                 await session.delete(item)
             workflow = await session.get(Workflow, workflow_id)

@@ -16,6 +16,10 @@ routes:
         model: gpt-4o-mini
         api_key_ref: openai-primary
         timeout_seconds: 15
+      - provider: groq
+        model: llama-3.3-70b-versatile
+        api_key_ref: groq-primary
+        timeout_seconds: 15
       - provider: gemini
         model: gemini-3.1-flash-lite
         api_key_ref: gemini-primary
@@ -23,10 +27,6 @@ routes:
       - provider: gemini
         model: gemini-flash-latest
         api_key_ref: gemini-primary
-        timeout_seconds: 15
-      - provider: groq
-        model: llama-3.3-70b-versatile
-        api_key_ref: groq-primary
         timeout_seconds: 15
     ollama_fallback_model: llama3.2
     ollama_fallback_timeout_seconds: 120
@@ -37,6 +37,10 @@ routes:
       - provider: gemini
         model: gemini-3.1-flash-lite
         api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: groq
+        model: llama-3.3-70b-versatile
+        api_key_ref: groq-primary
         timeout_seconds: 15
       - provider: gemini
         model: gemini-flash-latest

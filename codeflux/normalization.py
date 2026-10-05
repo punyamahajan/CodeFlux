@@ -31,9 +31,10 @@ def to_openai(response: NormalizedResponse, operation: str, logical_model: str) 
         choice["text"] = response.content
     else:
         choice["message"] = {"role": "assistant", "content": response.content}
+        if response.tool_calls:
+            choice["message"]["tool_calls"] = response.tool_calls
     return {"id": response.id, "object": "text_completion" if operation == "completion" else "chat.completion", "created": response.created, "model": logical_model, "choices": [choice], "usage": response.usage.model_dump()}
 
 
 def to_gemini(response: NormalizedResponse) -> dict[str, Any]:
     return {"candidates": [{"content": {"role": "model", "parts": [{"text": response.content or ""}]}, "finishReason": (response.finish_reason or "stop").upper(), "index": 0}], "usageMetadata": {"promptTokenCount": response.usage.prompt_tokens, "candidatesTokenCount": response.usage.completion_tokens, "totalTokenCount": response.usage.total_tokens}}
-

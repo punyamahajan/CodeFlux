@@ -27,7 +27,7 @@ from codeflux.storage import (
     WorkflowRepository,
 )
 
-st.set_page_config(page_title="CodeFlux control room", page_icon=":material/hub:", layout="wide")
+st.set_page_config(page_title="CodeFlux — AI task control room", page_icon=":material/hub:", layout="wide")
 
 
 def run_async(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -117,6 +117,31 @@ def checklist_from_response(text: str) -> list[str]:
     ] or ["Review and refine the plan before execution"]
 
 
+def chat_route_names() -> list[str]:
+    """Return routes that can handle planner chat requests."""
+    return [
+        alias
+        for alias, route in config.routes.items()
+        if route.candidates
+        and all(not candidate.model.startswith("text-embedding") for candidate in route.candidates)
+    ]
+
+
+def route_label(alias: str) -> str:
+    route = config.routes[alias]
+    primary = route.candidates[0]
+    fallback_count = len(route.candidates) - 1 + int(bool(route.ollama_fallback_model))
+    groq_fallback = any(candidate.provider == "groq" for candidate in route.candidates[1:])
+    if groq_fallback:
+        extra_count = fallback_count - 1
+        fallback_text = " · Groq fallback"
+        if extra_count:
+            fallback_text += f" + {extra_count} more"
+    else:
+        fallback_text = f" · {fallback_count} fallback{'s' if fallback_count != 1 else ''}" if fallback_count else ""
+    return f"{primary.model} ({primary.provider}){fallback_text}"
+
+
 settings = Settings()
 config = load_config(settings.config_path)
 if "gateway_url" not in st.session_state:
@@ -128,6 +153,12 @@ if "gateway_key" not in st.session_state:
     st.session_state.gateway_key = ""
 if "active_route" not in st.session_state:
     st.session_state.active_route = next(iter(config.routes), "")
+planner_routes = chat_route_names()
+if not planner_routes:
+    st.error("No chat-capable AI routes are configured for the work planner.")
+    st.stop()
+if st.session_state.active_route not in planner_routes:
+    st.session_state.active_route = planner_routes[0]
 
 if settings.dashboard_password and not st.session_state.get("dashboard_authenticated"):
     st.title("CodeFlux control room", icon=":material/lock:")
@@ -142,11 +173,10 @@ if settings.dashboard_password and not st.session_state.get("dashboard_authentic
     st.stop()
 
 with st.sidebar:
-    st.header("Connection", icon=":material/link:")
+    st.header("Gateway connection", icon=":material/link:")
     st.text_input("Gateway URL", key="gateway_url")
     st.text_input("Gateway API key", key="gateway_key", type="password")
-    st.selectbox("AI route", list(config.routes), key="active_route")
-    st.caption("The dashboard is an administrator interface. Do not expose it publicly without authentication and TLS.")
+    st.caption("Connect CodeFlux to your gateway to route tasks across your configured AI models.")
 
 identity = current_identity() if st.session_state.gateway_key else None
 if st.session_state.gateway_key and identity is None:
@@ -155,11 +185,20 @@ if identity:
     with st.sidebar:
         st.success(f"Signed in to team: {identity['team']}", icon=":material/verified_user:")
 
-st.title("CodeFlux control room", icon=":material/hub:")
-st.caption("Plan work once, retain progress across provider changes, and combine trusted API-key quotas.")
+with st.container(border=True):
+    st.title("CodeFlux", icon=":material/hub:")
+    st.markdown("### One place to plan, route, and complete work with the right AI model.")
+    st.write(
+        "Turn a master prompt into an actionable checklist, keep progress safely persisted, "
+        "and let CodeFlux route each task across your trusted model providers."
+    )
+    with st.container(horizontal=True):
+        st.badge("Smart model routing", icon=":material/route:", color="blue")
+        st.badge("Persistent task plans", icon=":material/checklist:", color="violet")
+        st.badge("Shared quota pool", icon=":material/key:", color="green")
 
 overview_tab, workflow_tab, pool_tab, access_tab = st.tabs(
-    [":material/monitoring: Overview", ":material/checklist: Work planner", ":material/key: Quota pool", ":material/group: Team access"]
+    [":material/monitoring: Overview", ":material/checklist: Task planner", ":material/key: Quota pool", ":material/group: Team access"]
 )
 
 with overview_tab:
@@ -201,13 +240,21 @@ with overview_tab:
         st.json(live["circuits"])
 
 with workflow_tab:
-    st.subheader("Create a plan from a master prompt", icon=":material/edit_note:")
-    with st.form("new_workflow"):
+    st.subheader("Turn an idea into an actionable plan", icon=":material/edit_note:")
+    st.caption("Describe the outcome once, choose your model, and CodeFlux will create a reusable task list.")
+    with st.container(border=True), st.form("new_workflow", border=False):
         title = st.text_input("Project title", placeholder="Professor demo")
         master_prompt = st.text_area(
             "Master prompt",
             height=130,
             placeholder="Describe the complete outcome, constraints, audience, and definition of done.",
+        )
+        generation_route = st.selectbox(
+            "Model for checklist",
+            planner_routes,
+            index=planner_routes.index(st.session_state.active_route),
+            format_func=route_label,
+            help="CodeFlux uses the selected model first, then its configured fallbacks if needed.",
         )
         col_gen, col_manual = st.columns([1, 1])
         with col_gen:
@@ -218,7 +265,11 @@ with workflow_tab:
         if not title.strip():
             st.error("Add a title for your project.")
         else:
-            workflow_id = run_async(with_storage("create", title.strip(), master_prompt.strip() or "Manual project", []))
+            workflow_id = run_async(
+                with_storage(
+                    "create", title.strip(), master_prompt.strip() or "Manual project", [], st.session_state.active_route
+                )
+            )
             st.session_state.selected_workflow = workflow_id
             st.rerun()
     if generate:
@@ -227,11 +278,15 @@ with workflow_tab:
         else:
             try:
                 with st.status("Asking the AI to structure the work…", expanded=True) as status:
-                    response, route_info = ask_gateway(st.session_state.active_route, [
+                    response, route_info = ask_gateway(generation_route, [
                         {"role": "system", "content": "Turn the user's project request into an actionable checklist. Return only a JSON array of concise checklist strings, ordered by dependency. Do not execute the work."},
                         {"role": "user", "content": master_prompt},
                     ])
-                    workflow_id = run_async(with_storage("create", title.strip(), master_prompt.strip(), checklist_from_response(response)))
+                    workflow_id = run_async(
+                        with_storage(
+                            "create", title.strip(), master_prompt.strip(), checklist_from_response(response), generation_route
+                        )
+                    )
                     status.update(label="Checklist created", state="complete", expanded=False)
                 st.session_state.selected_workflow = workflow_id
                 st.session_state.last_route_info = route_info
@@ -287,12 +342,27 @@ with workflow_tab:
                     st.rerun()
 
         for item in workflow["items"]:
-            col_check, col_del_item = st.columns([10, 1])
+            col_check, col_model, col_del_item = st.columns([6, 3, 1], vertical_alignment="bottom")
             with col_check:
                 checked = st.checkbox(item["text"], value=item["completed"], key=f"item_{item['id']}")
                 if checked != item["completed"]:
                     run_async(with_storage("set_item", item["id"], checked))
                     st.rerun()
+            with col_model:
+                saved_route = item.get("model_route")
+                if saved_route not in planner_routes:
+                    saved_route = planner_routes[0]
+                assigned_route = st.selectbox(
+                    f"Model for {item['text']}",
+                    planner_routes,
+                    index=planner_routes.index(saved_route),
+                    format_func=route_label,
+                    label_visibility="collapsed",
+                    help=f"Choose the model that will handle: {item['text']}",
+                    key=f"item_model_{item['id']}",
+                )
+                if assigned_route != item.get("model_route"):
+                    run_async(with_storage("set_item_model", item["id"], assigned_route))
             with col_del_item:
                 if st.button("✕", key=f"del_item_{item['id']}", help="Delete item"):
                     run_async(with_storage("delete_item", item["id"]))
@@ -300,22 +370,26 @@ with workflow_tab:
 
         with st.form(f"add_item_{selected_id}"):
             new_item = st.text_input("Add another checklist item")
+            new_item_route = st.selectbox("Model for new item", planner_routes, format_func=route_label)
             add = st.form_submit_button("Add item", icon=":material/add:")
         if add and new_item.strip():
-            run_async(with_storage("add_item", selected_id, new_item.strip()))
+            run_async(with_storage("add_item", selected_id, new_item.strip(), new_item_route))
             st.rerun()
-        if st.button("Do the work", type="primary", icon=":material/play_arrow:", key=f"execute_{selected_id}"):
-            checklist = "\n".join(f"- [{'x' if item['completed'] else ' '}] {item['text']}" for item in workflow["items"])
-            execution_prompt = f"MASTER REQUEST:\n{workflow['master_prompt']}\n\nPERSISTED CHECKLIST:\n{checklist}\n\nContinue the work using this progress record. Do not repeat completed items. Produce the requested deliverable and clearly state what was completed and what remains."
-            try:
-                with st.status("Executing from the persisted checklist…", expanded=True) as status:
-                    result, route_info = ask_gateway(st.session_state.active_route, [{"role": "user", "content": execution_prompt}])
-                    run_async(with_storage("save_result", selected_id, result))
-                    status.update(label="AI response saved", state="complete", expanded=False)
-                st.session_state.last_route_info = route_info
-                st.rerun()
-            except (httpx.HTTPError, ValueError) as exc:
-                st.error(f"Execution failed, but the checklist is safely persisted: {exc}")
+        with st.container(border=True):
+            st.subheader("Continue in your IDE", icon=":material/code:")
+            st.write(
+                "Your IDE agent can fetch the next incomplete task with its assigned model and shared "
+                "project context, perform the work locally, then report the result to CodeFlux."
+            )
+            st.code(
+                f"GET {gateway_base_url()}/v1/ide/workflows/{selected_id}/next-task\n"
+                "Authorization: Bearer <your cf_... key>",
+                language="http",
+            )
+            st.caption(
+                "The response includes `model` and `messages` for the next task. After your IDE finishes, "
+                "POST its summary to the completion URL returned in the integration guide."
+            )
         if workflow.get("result"):
             st.subheader("Latest saved result", icon=":material/task_alt:")
             with st.chat_message("assistant"):

@@ -18,8 +18,14 @@ from codeflux.logging import configure_logging
 from codeflux.normalization import gemini_request, openai_request, to_gemini, to_openai
 from codeflux.pii import PIIRedactor
 from codeflux.router import RoutingEngine
-from codeflux.schemas import GeminiRequest
-from codeflux.storage import ClientKeyRepository, CredentialVault, Database, UsageRepository
+from codeflux.schemas import GeminiRequest, IdeTaskCompletion
+from codeflux.storage import (
+    ClientKeyRepository,
+    CredentialVault,
+    Database,
+    UsageRepository,
+    WorkflowRepository,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -49,6 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.client_keys = settings.client_keys()
         app.state.client_key_repository = ClientKeyRepository(database.sessions, settings.master_secret)
         app.state.usage_repository = UsageRepository(database.sessions)
+        app.state.workflow_repository = WorkflowRepository(database.sessions)
         app.state.router = RoutingEngine(config, registry, KeyPool(vault), breaker, app.state.usage_repository, PIIRedactor())
         yield
         await client.aclose()
@@ -105,7 +112,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             async def events():
                 async for chunk in result.chunks:
-                    data = {"id": chunk.id, "object": "chat.completion.chunk", "model": normalized.model, "choices": [{"index": 0, "delta": {"content": chunk.content} if chunk.content is not None else {}, "finish_reason": chunk.finish_reason}]}
+                    delta = {}
+                    if chunk.content is not None:
+                        delta["content"] = chunk.content
+                    if chunk.tool_calls:
+                        delta["tool_calls"] = chunk.tool_calls
+                    data = {"id": chunk.id, "object": "chat.completion.chunk", "model": normalized.model, "choices": [{"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}]}
                     yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -126,6 +138,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/embeddings")
     async def embeddings(request: Request, team: str = Depends(authenticate)):
         return await handle_openai(request, "embedding", team)
+
+    @app.get("/v1/ide/workflows/{workflow_id}/next-task")
+    async def next_ide_task(workflow_id: int, request: Request, _: str = Depends(authenticate)):
+        try:
+            task = await request.app.state.workflow_repository.next_ide_task(workflow_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if task:
+            if task["model"] not in request.app.state.config.routes:
+                task["model"] = next(
+                    (
+                        alias
+                        for alias, route in request.app.state.config.routes.items()
+                        if all(not candidate.model.startswith("text-embedding") for candidate in route.candidates)
+                    ),
+                    None,
+                )
+            task["completion_url"] = (
+                f"/v1/ide/workflows/{workflow_id}/tasks/{task['task_id']}/complete"
+            )
+        return {"task": task}
+
+    @app.post("/v1/ide/workflows/{workflow_id}/tasks/{task_id}/complete")
+    async def complete_ide_task(
+        workflow_id: int,
+        task_id: int,
+        payload: IdeTaskCompletion,
+        request: Request,
+        _: str = Depends(authenticate),
+    ):
+        try:
+            return await request.app.state.workflow_repository.complete_ide_task(
+                workflow_id, task_id, payload.result
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/v1beta/models/{model}:generateContent")
     async def generate_content(model: str, payload: GeminiRequest, request: Request, team: str = Depends(authenticate)):

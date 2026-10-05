@@ -245,10 +245,49 @@ docker compose down
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat |
 | `POST` | `/v1/completions` | OpenAI-compatible legacy completion |
 | `POST` | `/v1/embeddings` | OpenAI-compatible embeddings |
+| `GET` | `/v1/ide/workflows/{workflow_id}/next-task` | Fetch the next IDE task with its assigned route and shared context |
+| `POST` | `/v1/ide/workflows/{workflow_id}/tasks/{task_id}/complete` | Save the IDE result and complete the task |
 | `POST` | `/v1beta/models/{model}:generateContent` | Gemini-compatible generation |
 | `GET` | `/metrics` | Prometheus metrics |
 
 All endpoints except `/health` require `Authorization: Bearer <codeflux-key>` or `X-API-Key: <codeflux-key>`.
+
+### IDE task handoff
+
+Configure an OpenAI-compatible IDE agent with the CodeFlux base URL and a personal `cf_...` key:
+
+```text
+Base URL: http://localhost:8000/v1
+API key: cf_your_personal_key
+```
+
+Fetch the next task for a planner workflow:
+
+```powershell
+$headers = @{ Authorization = "Bearer cf_your_personal_key" }
+$handoff = Invoke-RestMethod `
+    -Uri "http://localhost:8000/v1/ide/workflows/1/next-task" `
+    -Headers $headers
+```
+
+The returned `task.model` is the CodeFlux route to use and `task.messages` contains the master
+request, full plan, earlier results, and current assignment. Send those values to
+`/v1/chat/completions` through the IDE agent. CodeFlux now preserves OpenAI-compatible tool calls,
+including streamed tool-call deltas, so the IDE can operate its own file and terminal tools.
+
+After the IDE verifies the work, report its summary back to the returned `task.completion_url`:
+
+```powershell
+$body = @{ result = "Implemented the assigned task and verified the tests." } | ConvertTo-Json
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000$($handoff.task.completion_url)" `
+    -Headers $headers `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+Fetch the next task again and repeat until `task` is `null`.
 
 ## Tests
 
