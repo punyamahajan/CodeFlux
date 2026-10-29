@@ -140,11 +140,22 @@ class CredentialVault:
             values = await session.scalars(select(Credential.reference).where(Credential.provider == provider))
             return list(values)
 
-    async def list_metadata(self) -> list[dict[str, str]]:
+    def _decrypts(self, encrypted_value: str) -> bool:
+        try:
+            self.fernet.decrypt(encrypted_value.encode())
+            return True
+        except InvalidToken:
+            return False
+
+    async def list_metadata(self) -> list[dict[str, object]]:
         async with self.sessions() as session:
             values = await session.scalars(select(Credential).order_by(Credential.provider, Credential.reference))
             return [
-                {"reference": item.reference, "provider": item.provider, "created_at": item.created_at.isoformat()}
+                {
+                    "reference": item.reference, "provider": item.provider,
+                    "created_at": item.created_at.isoformat(),
+                    "usable": self._decrypts(item.encrypted_value),
+                }
                 for item in values
             ]
 
@@ -355,8 +366,8 @@ class WorkflowRepository:
                 f"SHARED PROJECT PLAN:\n{project_plan}\n\n"
                 f"YOUR ASSIGNED TASK:\n{task.text}\n\n"
                 f"OUTPUT FROM EARLIER TASKS:\n{workflow.result or 'No earlier task output.'}\n\n"
-                "Work in the current IDE workspace. Complete only the assigned task, use your available "
-                "file and terminal tools as needed, verify the result, and then report a concise summary."
+                "Work in the shared project workspace. Complete only the assigned task, build on the "
+                "output from earlier tasks, verify the result, and then report a concise summary."
             )
             return {
                 "workflow_id": workflow.id,

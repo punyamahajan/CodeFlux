@@ -22,6 +22,8 @@ services:
     env_file: .env
     environment:
       CODEFLUX_DASHBOARD_GATEWAY_URL: http://codeflux:8000
+      # Shown in the API access snippets; the internal address above is not reachable by apps.
+      CODEFLUX_PUBLIC_URL: ${CODEFLUX_PUBLIC_URL:-http://localhost:8000}
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data

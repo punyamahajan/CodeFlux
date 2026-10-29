@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from codeflux.adapters.registry import AdapterRegistry
 from codeflux.auth import authenticate
@@ -15,7 +18,13 @@ from codeflux.config import Settings, load_config
 from codeflux.errors import NoProviderAvailable
 from codeflux.keys import KeyPool
 from codeflux.logging import configure_logging
-from codeflux.normalization import gemini_request, openai_request, to_gemini, to_openai
+from codeflux.normalization import (
+    gemini_chunk,
+    gemini_request,
+    openai_request,
+    to_gemini,
+    to_openai,
+)
 from codeflux.pii import PIIRedactor
 from codeflux.router import RoutingEngine
 from codeflux.schemas import GeminiRequest, IdeTaskCompletion
@@ -44,7 +53,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await vault.put(reference, item["provider"], item["key"])
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise RuntimeError("CODEFLUX_CREDENTIALS_JSON must map refs to provider/key objects") from exc
-        client = httpx.AsyncClient(timeout=30)
+        # No read limit here: each candidate's timeout_seconds (enforced by the router) decides,
+        # so slow local models are not cut off at a fixed 30 seconds.
+        client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10))
         registry = AdapterRegistry(client, config.provider_base_urls)
         breaker = CircuitBreaker(config.circuit_breaker.failure_threshold, config.circuit_breaker.cooldown_seconds)
         app.state.config = config
@@ -62,10 +73,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await database.close()
 
     app = FastAPI(title="CodeFlux", version="0.1.0", lifespan=lifespan)
+    # Browser apps call the gateway directly; the API key, not the origin, is the credential.
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+    def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
+        # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": {"message": message, "type": error_type, "code": status_code}, "detail": message},
+        )
 
     @app.exception_handler(NoProviderAvailable)
     async def no_provider(_: Request, exc: NoProviderAvailable):
-        return JSONResponse(status_code=503, content={"error": {"message": str(exc), "type": "provider_unavailable"}})
+        return error_response(503, str(exc), "provider_unavailable")
+
+    @app.exception_handler(PermissionError)
+    async def forbidden(_: Request, exc: PermissionError):
+        return error_response(403, str(exc), "permission_denied")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(_: Request, exc: StarletteHTTPException):
+        error_type = {401: "invalid_api_key", 429: "insufficient_quota"}.get(exc.status_code, "invalid_request_error")
+        return error_response(exc.status_code, str(exc.detail), error_type)
 
     @app.get("/health")
     async def health():
@@ -109,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if normalized.stream:
             result = await request.app.state.router.route_stream(normalized, team)
+            created = int(time.time())
 
             async def events():
                 async for chunk in result.chunks:
@@ -117,7 +147,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         delta["content"] = chunk.content
                     if chunk.tool_calls:
                         delta["tool_calls"] = chunk.tool_calls
-                    data = {"id": chunk.id, "object": "chat.completion.chunk", "model": normalized.model, "choices": [{"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}]}
+                    data = {"id": chunk.id, "object": "chat.completion.chunk", "created": created, "model": normalized.model, "choices": [{"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}]}
                     yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -176,9 +206,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/v1beta/models/{model}:generateContent")
+    @app.post("/v1/models/{model}:generateContent")
     async def generate_content(model: str, payload: GeminiRequest, request: Request, team: str = Depends(authenticate)):
         result = await request.app.state.router.route(gemini_request(model, payload), team)
         return to_gemini(result.response)
+
+    @app.post("/v1beta/models/{model}:streamGenerateContent")
+    @app.post("/v1/models/{model}:streamGenerateContent")
+    async def stream_generate_content(
+        model: str, payload: GeminiRequest, request: Request, alt: str | None = None, team: str = Depends(authenticate)
+    ):
+        normalized = gemini_request(model, payload).model_copy(update={"stream": True})
+        result = await request.app.state.router.route_stream(normalized, team)
+        headers = {"X-CodeFlux-Provider": result.provider}
+        if alt == "sse":
+            async def events():
+                async for chunk in result.chunks:
+                    yield f"data: {json.dumps(gemini_chunk(chunk))}\r\n\r\n"
+
+            return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
+        # Without alt=sse the Gemini REST API streams one JSON array.
+        chunks = [gemini_chunk(chunk) async for chunk in result.chunks]
+        return JSONResponse(chunks, headers=headers)
 
     @app.get("/metrics", response_class=Response)
     async def metrics(_: str = Depends(authenticate)):

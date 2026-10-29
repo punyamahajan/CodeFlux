@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import hmac
 import importlib
-import json
 import re
 import uuid
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -19,6 +19,8 @@ import codeflux.storage
 importlib.reload(codeflux.storage)
 
 from codeflux.config import Settings, load_config
+from codeflux.planner import PLANNER_PROMPT, checklist_from_response
+from codeflux.runner import StepResult, WorkflowRunner
 from codeflux.storage import (
     ClientKeyRepository,
     CredentialVault,
@@ -26,6 +28,8 @@ from codeflux.storage import (
     UsageRepository,
     WorkflowRepository,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 st.set_page_config(page_title="CodeFlux — AI task control room", page_icon=":material/hub:", layout="wide")
 
@@ -64,6 +68,8 @@ async def with_storage(action: str, *args: Any) -> Any:
             return await client_keys.create(*args)
         if action == "revoke_client_key":
             return await client_keys.revoke(*args)
+        if action == "authenticate_client_key":
+            return await client_keys.authenticate(*args)
         workflows = WorkflowRepository(database.sessions)
         return await getattr(workflows, action)(*args)
     finally:
@@ -80,11 +86,36 @@ def gateway_get(path: str) -> dict[str, Any]:
     return response.json()
 
 
-def current_identity() -> dict[str, Any] | None:
+def public_base_url() -> str:
+    """The address apps should use; inside Docker the dashboard's own URL is internal."""
+    return (settings.public_url or gateway_base_url()).rstrip("/")
+
+
+def current_identity() -> dict[str, Any]:
     try:
         return gateway_get("/v1/me")
     except (httpx.HTTPError, ValueError):
-        return None
+        # Gateway offline: fall back to what was verified at sign-in.
+        return st.session_state.login_identity
+
+
+def sign_in(role: str, key: str | None, identity: dict[str, Any]) -> None:
+    st.session_state.role = role
+    st.session_state.gateway_key = key or ""
+    st.session_state.login_identity = identity
+    st.rerun()
+
+
+def sign_out() -> None:
+    for name in ("role", "gateway_key", "login_identity"):
+        st.session_state.pop(name, None)
+
+
+def teammate_identity(key: str) -> dict[str, Any] | None:
+    for bootstrap_key, team in settings.client_keys().items():
+        if hmac.compare_digest(key, bootstrap_key):
+            return {"team": team, "name": team, "monthly_token_limit": None}
+    return run_async(with_storage("authenticate_client_key", key))
 
 
 def ask_gateway(model: str, messages: list[dict[str, str]]) -> tuple[str, dict[str, Any]]:
@@ -94,27 +125,35 @@ def ask_gateway(model: str, messages: list[dict[str, str]]) -> tuple[str, dict[s
         json={"model": model, "messages": messages},
         timeout=190,
     )
-    response.raise_for_status()
+    if response.is_error:
+        try:
+            message = response.json()["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = response.text[:300]
+        if "no-key" in message:
+            message += (
+                " — no usable provider key. Add one in **Quota pool**; keys marked unusable "
+                "there were saved with a different CODEFLUX_MASTER_SECRET."
+            )
+        raise ValueError(f"gateway returned {response.status_code}: {message}")
     body = response.json()
     return body["choices"][0]["message"]["content"], body.get("codeflux", {})
 
 
-def checklist_from_response(text: str) -> list[str]:
-    match = re.search(r"\[[\s\S]*\]", text)
-    if match:
-        try:
-            values = json.loads(match.group(0))
-            if isinstance(values, list):
-                items = [str(item).strip() for item in values if str(item).strip()]
-                if items:
-                    return items
-        except json.JSONDecodeError:
-            pass
-    return [
-        re.sub(r"^\s*(?:[-*]|\d+[.)]|\[[ xX]\])\s*", "", line).strip()
-        for line in text.splitlines()
-        if re.match(r"^\s*(?:[-*]|\d+[.)]|\[[ xX]\])\s+", line)
-    ] or ["Review and refine the plan before execution"]
+def done_by(result: str | None, task: str) -> str | None:
+    """Describe who did a task and whether its checks passed, from the runner's saved section."""
+    match = re.search(
+        rf"^## {re.escape(task)}\s*\n+_Model: `([^`]+)` via `([^`]+)`_(.*?)(?=^## |\Z)",
+        result or "", re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return None
+    who = f"`{match[1]}` via `{match[2]}`"
+    if "**Checks failed**" in match[3]:
+        return f":orange[:material/warning: Done, but checks failed] · {who}"
+    if "Checks: passed" in match[3]:
+        return f":green[:material/verified: Done, checks passed] · {who}"
+    return f":green[:material/check_circle: Done] · {who}"
 
 
 def chat_route_names() -> list[str]:
@@ -144,15 +183,9 @@ def route_label(alias: str) -> str:
 
 settings = Settings()
 config = load_config(settings.config_path)
-if "gateway_url" not in st.session_state:
-    # Streamlit can retain an older imported Settings class across a hot reload.
-    st.session_state.gateway_url = getattr(
-        settings, "dashboard_gateway_url", f"http://localhost:{settings.port}"
-    )
-if "gateway_key" not in st.session_state:
-    st.session_state.gateway_key = ""
-if "active_route" not in st.session_state:
-    st.session_state.active_route = next(iter(config.routes), "")
+ADMIN_IDENTITY = {"team": "admin", "name": "admin", "monthly_token_limit": None}
+st.session_state.setdefault("gateway_url", settings.dashboard_gateway_url)
+st.session_state.setdefault("active_route", next(iter(config.routes), ""))
 planner_routes = chat_route_names()
 if not planner_routes:
     st.error("No chat-capable AI routes are configured for the work planner.")
@@ -160,30 +193,49 @@ if not planner_routes:
 if st.session_state.active_route not in planner_routes:
     st.session_state.active_route = planner_routes[0]
 
-if settings.dashboard_password and not st.session_state.get("dashboard_authenticated"):
-    st.title("CodeFlux control room", icon=":material/lock:")
-    with st.form("dashboard_login"):
+if not settings.dashboard_password and "role" not in st.session_state:
+    # No password configured: single-user local mode, signed in as admin.
+    st.session_state.role = "admin"
+    st.session_state.gateway_key = settings.admin_key() or ""
+    st.session_state.login_identity = ADMIN_IDENTITY
+
+if "role" not in st.session_state:
+    st.title("Sign in to CodeFlux", icon=":material/hub:")
+    admin_tab, teammate_tab = st.tabs([":material/shield_person: Admin", ":material/person: Teammate"])
+    with admin_tab, st.form("admin_login"):
         supplied_password = st.text_input("Dashboard password", type="password")
-        login = st.form_submit_button("Sign in", type="primary")
-    if login and hmac.compare_digest(supplied_password, settings.dashboard_password):
-        st.session_state.dashboard_authenticated = True
-        st.rerun()
-    if login:
+        admin_login = st.form_submit_button("Sign in", type="primary", icon=":material/login:")
+    if admin_login:
+        if hmac.compare_digest(supplied_password, settings.dashboard_password):
+            sign_in("admin", settings.admin_key(), ADMIN_IDENTITY)
         st.error("Incorrect dashboard password.")
+    with teammate_tab, st.form("teammate_login"):
+        supplied_key = st.text_input("Your CodeFlux API key", type="password", placeholder="cf_...")
+        st.caption("Ask your admin for a key. It is the same key you use in your projects.")
+        teammate_login = st.form_submit_button("Sign in", type="primary", icon=":material/login:")
+    if teammate_login:
+        verified = teammate_identity(supplied_key.strip()) if supplied_key.strip() else None
+        if verified:
+            sign_in("admin" if verified["team"] == "admin" else "member", supplied_key.strip(), verified)
+        st.error("That CodeFlux API key is not valid or has been revoked.")
     st.stop()
 
+is_admin = st.session_state.role == "admin"
+identity = current_identity()
 with st.sidebar:
-    st.header("Gateway connection", icon=":material/link:")
-    st.text_input("Gateway URL", key="gateway_url")
-    st.text_input("Gateway API key", key="gateway_key", type="password")
-    st.caption("Connect CodeFlux to your gateway to route tasks across your configured AI models.")
-
-identity = current_identity() if st.session_state.gateway_key else None
-if st.session_state.gateway_key and identity is None:
-    st.warning("That CodeFlux API key could not be verified. Check the key and gateway URL.", icon=":material/key_off:")
-if identity:
-    with st.sidebar:
-        st.success(f"Signed in to team: {identity['team']}", icon=":material/verified_user:")
+    st.success(f"Signed in as **{identity.get('name') or identity['team']}** · team {identity['team']}", icon=":material/verified_user:")
+    if settings.dashboard_password:
+        st.button("Sign out", icon=":material/logout:", on_click=sign_out)
+    else:
+        st.caption("Local mode: set `CODEFLUX_DASHBOARD_PASSWORD` to require sign-in.")
+    if is_admin and not st.session_state.gateway_key:
+        st.warning("Add an admin key to `CODEFLUX_GATEWAY_KEYS` (for example `my-secret:admin`) so the dashboard can call the gateway.", icon=":material/key_off:")
+    with st.expander("Gateway address", icon=":material/link:"):
+        st.text_input("Gateway URL", key="gateway_url", help="Only change this if the gateway is not on this machine.")
+        st.button(
+            "Reset", icon=":material/restart_alt:",
+            on_click=lambda: st.session_state.update(gateway_url=settings.dashboard_gateway_url),
+        )
 
 with st.container(border=True):
     st.title("CodeFlux", icon=":material/hub:")
@@ -198,11 +250,11 @@ with st.container(border=True):
         st.badge("Shared quota pool", icon=":material/key:", color="green")
 
 overview_tab, workflow_tab, pool_tab, access_tab = st.tabs(
-    [":material/monitoring: Overview", ":material/checklist: Task planner", ":material/key: Quota pool", ":material/group: Team access"]
+    [":material/monitoring: Overview", ":material/checklist: Task planner", ":material/key: Quota pool", ":material/api: API access"]
 )
 
 with overview_tab:
-    usage = run_async(with_storage("usage", None if identity and identity["team"] == "admin" else (identity or {}).get("team")))
+    usage = run_async(with_storage("usage", None if is_admin else identity["team"]))
     try:
         live = gateway_get("/dashboard/status")
         online = True
@@ -222,12 +274,12 @@ with overview_tab:
         st.metric("Total tokens used", usage["total_tokens"], border=True)
         known = sum(1 for item in live.get("limits", []) if item.get("remaining_requests") is not None)
         st.metric("Keys with known request limit", known, border=True)
-    if identity:
-        used_this_month = int(identity.get("tokens_used_this_month", 0))
+    if "tokens_used_this_month" in identity:
+        used_this_month = int(identity["tokens_used_this_month"])
         left_this_month = identity.get("tokens_left_this_month")
         budget_text = "unlimited" if left_this_month is None else f"{int(left_this_month):,} left"
         st.caption(f"Your team has used **{used_this_month:,} tokens** this calendar month · **{budget_text}** on this key's budget.")
-    if usage.get("by_team") and identity and identity["team"] == "admin":
+    if usage.get("by_team") and is_admin:
         st.subheader("Usage by team", icon=":material/groups:")
         st.dataframe(pd.DataFrame(usage["by_team"]), hide_index=True)
     limits = live.get("limits", [])
@@ -279,7 +331,7 @@ with workflow_tab:
             try:
                 with st.status("Asking the AI to structure the work…", expanded=True) as status:
                     response, route_info = ask_gateway(generation_route, [
-                        {"role": "system", "content": "Turn the user's project request into an actionable checklist. Return only a JSON array of concise checklist strings, ordered by dependency. Do not execute the work."},
+                        {"role": "system", "content": PLANNER_PROMPT},
                         {"role": "user", "content": master_prompt},
                     ])
                     workflow_id = run_async(
@@ -292,7 +344,14 @@ with workflow_tab:
                 st.session_state.last_route_info = route_info
                 st.rerun()
             except (httpx.HTTPError, ValueError) as exc:
-                st.error(f"The checklist could not be generated: {exc}")
+                if isinstance(exc, httpx.ConnectError):
+                    st.error(
+                        f"Could not reach the gateway at `{st.session_state.gateway_url}` ({exc}). "
+                        "Check that `python -m codeflux` is running, or use **Reset** under "
+                        "**Gateway address** in the sidebar."
+                    )
+                else:
+                    st.error(f"The checklist could not be generated: {exc}")
 
     workflows = run_async(with_storage("list"))
     if not workflows:
@@ -320,34 +379,45 @@ with workflow_tab:
         workflow = workflow_by_id[selected_id]
         completed = sum(item["completed"] for item in workflow["items"])
         total = len(workflow["items"])
+        with st.container(horizontal=True, vertical_alignment="center"):
+            if total and completed == total:
+                st.badge("All tasks done", icon=":material/task_alt:", color="green")
+            elif completed:
+                st.badge(f"In progress · {total - completed} left", icon=":material/pending:", color="orange")
+            else:
+                st.badge("Not started", icon=":material/radio_button_unchecked:", color="gray")
         st.progress(completed / total if total else 0, text=f"{completed} of {total} tasks completed")
         with st.expander("Master prompt", icon=":material/description:"):
             st.write(workflow["master_prompt"])
 
         if workflow["items"]:
-            col_check_all, col_uncheck_all, _ = st.columns([1, 1, 3])
-            with col_check_all:
+            with st.container(horizontal=True):
                 if st.button("Check all", icon=":material/done_all:", key=f"check_all_{selected_id}"):
                     for item in workflow["items"]:
                         if not item["completed"]:
                             run_async(with_storage("set_item", item["id"], True))
-                            st.session_state[f"item_{item['id']}"] = True
                     st.rerun()
-            with col_uncheck_all:
                 if st.button("Uncheck all", icon=":material/remove_done:", key=f"uncheck_all_{selected_id}"):
                     for item in workflow["items"]:
                         if item["completed"]:
                             run_async(with_storage("set_item", item["id"], False))
-                            st.session_state[f"item_{item['id']}"] = False
                     st.rerun()
 
         for item in workflow["items"]:
+            # The database is the source of truth: the runner and other teammates change it too,
+            # so the widget is reset from it on every run and only a real click writes back.
+            st.session_state[f"item_{item['id']}"] = item["completed"]
             col_check, col_model, col_del_item = st.columns([6, 3, 1], vertical_alignment="bottom")
             with col_check:
-                checked = st.checkbox(item["text"], value=item["completed"], key=f"item_{item['id']}")
-                if checked != item["completed"]:
-                    run_async(with_storage("set_item", item["id"], checked))
-                    st.rerun()
+                label = f":green[~~{item['text']}~~]" if item["completed"] else item["text"]
+                st.checkbox(
+                    label, key=f"item_{item['id']}",
+                    on_change=lambda item_id=item["id"]: run_async(
+                        with_storage("set_item", item_id, st.session_state[f"item_{item_id}"])
+                    ),
+                )
+                if item["completed"] and (status := done_by(workflow.get("result"), item["text"])):
+                    st.caption(status)
             with col_model:
                 saved_route = item.get("model_route")
                 if saved_route not in planner_routes:
@@ -376,13 +446,107 @@ with workflow_tab:
             run_async(with_storage("add_item", selected_id, new_item.strip(), new_item_route))
             st.rerun()
         with st.container(border=True):
-            st.subheader("Continue in your IDE", icon=":material/code:")
+            st.subheader("Do the work with CodeFlux", icon=":material/smart_toy:")
+            st.write(
+                "CodeFlux works through the unchecked tasks in order through its own API. Each task "
+                "uses the model chosen next to it and receives the master prompt, the full plan, "
+                "every earlier task's result, and the current files in the workspace folder. After "
+                "each task CodeFlux compiles the code, runs the tests, and loads any Streamlit app; "
+                "failures go back to the model to fix before the task is ticked."
+            )
+            slug = re.sub(r"[^a-z0-9]+", "-", workflow["title"].lower()).strip("-") or f"project-{selected_id}"
+            workspace_name = st.text_input(
+                "Workspace folder", value=f"demo/{slug}", key=f"workspace_{selected_id}",
+                help="Relative to the CodeFlux folder. Models can only write files inside it.",
+            )
+            with st.container(horizontal=True):
+                run_one = st.button("Run next task", icon=":material/play_arrow:", key=f"run_one_{selected_id}")
+                run_all = st.button(
+                    "Run all remaining tasks", type="primary", icon=":material/fast_forward:",
+                    key=f"run_all_{selected_id}",
+                )
+            if run_one or run_all:
+                workspace = (PROJECT_ROOT / workspace_name.strip()).resolve()
+                if not workspace_name.strip() or not workspace.is_relative_to(PROJECT_ROOT) or workspace == PROJECT_ROOT:
+                    st.error("Choose a sub-folder inside the CodeFlux folder, such as `demo/my-project`.")
+                else:
+                    runner = WorkflowRunner(gateway_base_url(), st.session_state.gateway_key, workspace)
+                    log: list[str] = []
+                    with st.status("Starting…", expanded=True) as run_status:
+                        def started(task: str, model: str) -> None:
+                            run_status.update(label=f"Working on: {task}")
+                            st.write(f":material/pending: **{task}** with `{model}`…")
+
+                        def finished(step: StepResult) -> None:
+                            files = ", ".join(f"`{name}`" for name in step.files) or "no files"
+                            fixes = f" after {step.fix_attempts} fix attempt(s)" if step.fix_attempts else ""
+                            if step.problems:
+                                icon, checks = ":orange[:material/warning:]", f"checks **failed**{fixes}: {step.problems[0].splitlines()[0]}"
+                            elif step.files:
+                                icon, checks = ":green[:material/verified:]", f"checks passed{fixes}"
+                            else:
+                                icon, checks = ":orange[:material/warning:]", "nothing was written"
+                            line = f"{icon} **{step.task}**: answered by `{step.provider}`, wrote {files}; {checks}"
+                            log.append(line)
+                            st.write(line)
+
+                        def repaired(round_number: int, files: list[str], problems: list[str]) -> None:
+                            run_status.update(label=f"Repairing the whole project (round {round_number})")
+                            wrote = ", ".join(f"`{name}`" for name in files) or "nothing"
+                            if problems:
+                                line = f":orange[:material/build:] Repair {round_number}: wrote {wrote}; still failing: {problems[0].splitlines()[0]}"
+                            else:
+                                line = f":green[:material/build:] Repair {round_number}: wrote {wrote}; the project now passes every check"
+                            log.append(line)
+                            st.write(line)
+
+                        def accepted(files: list[str]) -> None:
+                            if files:
+                                line = ":blue[:material/fact_check:] Wrote `test_acceptance.py`: it uses the app like a person would to check every requested feature"
+                            else:
+                                line = ":gray[:material/fact_check:] No new acceptance test written (one already exists, or the model returned none)"
+                            log.append(line)
+                            st.write(line)
+                            run_status.update(label="Checking the finished app end to end")
+
+                        try:
+                            steps = runner.run(selected_id, None if run_all else 1, started, finished, repaired, accepted)
+                        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
+                            steps = []
+                            log.append(f":red[:material/error:] Stopped: {exc}")
+                            run_status.update(label="Stopped with an error", state="error")
+                            st.error(str(exc))
+                        else:
+                            if runner.final_problems is not None:
+                                remaining = runner.final_problems
+                                verdict = (
+                                    ":red[:material/cancel:] **Final check failed**: the app does not fully work yet: "
+                                    + "; ".join(problem.splitlines()[0] for problem in remaining[:3])
+                                    if remaining else
+                                    ":green[:material/verified:] **Final check passed**: the app compiles, its tests "
+                                    "pass, it loads, and a review found every requested feature."
+                                )
+                                log.append(verdict)
+                                st.markdown(verdict)
+                            run_status.update(
+                                label=f"Finished {len(steps)} task(s)" if steps else "Nothing left to do",
+                                state="complete",
+                            )
+                    st.session_state[f"run_log_{selected_id}"] = log
+                    if log:
+                        st.rerun()  # redraw the checklist with the newly ticked tasks
+            if log_lines := st.session_state.get(f"run_log_{selected_id}"):
+                with st.expander("Last run", icon=":material/history:", expanded=True):
+                    for line in log_lines:
+                        st.markdown(line)
+                    st.caption(f"Files are in `{(PROJECT_ROOT / workspace_name.strip()).resolve()}`")
+        with st.expander("Use your own IDE agent instead", icon=":material/code:"):
             st.write(
                 "Your IDE agent can fetch the next incomplete task with its assigned model and shared "
                 "project context, perform the work locally, then report the result to CodeFlux."
             )
             st.code(
-                f"GET {gateway_base_url()}/v1/ide/workflows/{selected_id}/next-task\n"
+                f"GET {public_base_url()}/v1/ide/workflows/{selected_id}/next-task\n"
                 "Authorization: Bearer <your cf_... key>",
                 language="http",
             )
@@ -405,9 +569,7 @@ with pool_tab:
         api_key = st.text_input("Provider API key", type="password")
         save_key = st.form_submit_button("Encrypt and add to pool", type="primary", icon=":material/add:")
     if save_key:
-        if not identity:
-            st.error("Enter a valid personal CodeFlux API key in the sidebar before contributing a provider key.")
-        elif not contributor.strip() or not api_key.strip():
+        if not contributor.strip() or not api_key.strip():
             st.error("Contributor name and API key are required.")
         else:
             reference = f"{provider}-{re.sub(r'[^a-z0-9-]', '-', contributor.lower()).strip('-')}-{uuid.uuid4().hex[:6]}"
@@ -417,27 +579,107 @@ with pool_tab:
     st.subheader("Available pool", icon=":material/group:")
     if credentials:
         rows = pd.DataFrame(credentials)
-        counts = rows.groupby("provider").size().reset_index(name="encrypted keys")
+        counts = rows.groupby("provider").agg(**{"encrypted keys": ("usable", "size"), "usable keys": ("usable", "sum")}).reset_index()
         st.dataframe(counts, hide_index=True)
+        unusable = [item["reference"] for item in credentials if not item["usable"]]
+        if unusable:
+            st.warning(
+                f"{len(unusable)} key(s) cannot be decrypted with the current `CODEFLUX_MASTER_SECRET` "
+                "and are skipped: " + ", ".join(f"`{ref}`" for ref in unusable)
+                + ". Restore the old secret or add the keys again.",
+                icon=":material/key_off:",
+            )
         with st.expander("Credential references", icon=":material/visibility:"):
             st.dataframe(rows, hide_index=True)
     else:
         st.info("The encrypted key pool is empty.")
 
 with access_tab:
-    st.subheader("CodeFlux API access", icon=":material/admin_panel_settings:")
-    if not identity:
-        st.info("Enter a valid Gateway API key in the sidebar to see your usage or manage team access.")
-    elif identity["team"] != "admin":
+    st.subheader("Use CodeFlux in your project", icon=":material/rocket_launch:")
+    st.write(
+        "CodeFlux speaks the OpenAI API, so any project or tool that works with OpenAI works with "
+        "CodeFlux: point it at the base URL below and use your CodeFlux key as the API key."
+    )
+    base_url = public_base_url()
+    your_key = st.session_state.gateway_key
+    with st.container(border=True):
+        st.markdown("**Base URL**")
+        st.code(f"{base_url}/v1", language=None)
+        st.markdown("**Your API key**")
+        if not your_key:
+            st.info("No admin key is configured. Create a teammate key below and use that one.", icon=":material/info:")
+        elif st.toggle("Show my key", key="show_key"):
+            st.code(your_key, language=None)
+        else:
+            st.code(f"{your_key[:6]}{'•' * 20}", language=None)
+        st.markdown("**Models**")
+        st.caption(
+            "Use a CodeFlux route below, or any provider model name such as `gpt-4o-mini` or "
+            "`gemini-2.0-flash`. Unknown names go to the default route with automatic failover."
+        )
+        st.markdown(" ".join(f"`{alias}`" for alias in config.routes))
+
+    key_hint = "your-codeflux-key"
+    model = planner_routes[0]
+    env_tab, python_tab, js_tab, curl_tab, gemini_tab = st.tabs(
+        ["Environment variables", "Python", "JavaScript", "curl", "Gemini SDK"]
+    )
+    with env_tab:
+        st.caption("Most OpenAI-based apps and tools read these, so they need no code changes.")
+        st.code(f"OPENAI_BASE_URL={base_url}/v1\nOPENAI_API_KEY={key_hint}", language="bash")
+    with python_tab:
+        st.caption("`pip install openai`")
+        st.code(
+            "from openai import OpenAI\n\n"
+            f'client = OpenAI(base_url="{base_url}/v1", api_key="{key_hint}")\n'
+            "response = client.chat.completions.create(\n"
+            f'    model="{model}",\n'
+            '    messages=[{"role": "user", "content": "Hello!"}],\n'
+            ")\n"
+            "print(response.choices[0].message.content)",
+            language="python",
+        )
+    with js_tab:
+        st.caption("`npm install openai`")
+        st.code(
+            'import OpenAI from "openai";\n\n'
+            f'const client = new OpenAI({{ baseURL: "{base_url}/v1", apiKey: "{key_hint}" }});\n'
+            "const response = await client.chat.completions.create({\n"
+            f'  model: "{model}",\n'
+            '  messages: [{ role: "user", content: "Hello!" }],\n'
+            "});\n"
+            "console.log(response.choices[0].message.content);",
+            language="javascript",
+        )
+    with curl_tab:
+        st.code(
+            f"curl {base_url}/v1/chat/completions \\n"
+            f'  -H "Authorization: Bearer {key_hint}" \\n'
+            '  -H "Content-Type: application/json" \\n'
+            f'  -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello!"}}]}}\'',
+            language="bash",
+        )
+    with gemini_tab:
+        st.caption("`pip install google-genai`")
+        st.code(
+            "from google import genai\n\n"
+            f'client = genai.Client(api_key="{key_hint}", http_options={{"base_url": "{base_url}"}})\n'
+            f'response = client.models.generate_content(model="{model}", contents="Hello!")\n'
+            "print(response.text)",
+            language="python",
+        )
+
+    if not is_admin:
         team_usage = run_async(with_storage("usage", identity["team"]))
+        st.subheader("Your usage", icon=":material/speed:")
         with st.container(horizontal=True):
             st.metric("Team", identity["team"], border=True)
             st.metric("Requests", team_usage["requests"], border=True)
             st.metric("Tokens used", team_usage["total_tokens"], border=True)
             remaining = identity.get("tokens_left_this_month")
             st.metric("Tokens left this month", "Unlimited" if remaining is None else f"{int(remaining):,}", border=True)
-        st.code(f"CODEFLUX_BASE_URL={gateway_base_url()}/v1\nCODEFLUX_API_KEY=<your key>", language="dotenv")
     else:
+        st.subheader("Teammate keys", icon=":material/group_add:")
         st.caption("Create a personal CodeFlux key for each teammate. The secret is shown once; CodeFlux stores only a one-way digest.")
         with st.form("create_client_key", clear_on_submit=True):
             member_name = st.text_input("Member name", placeholder="Alice")
@@ -463,3 +705,13 @@ with access_tab:
                 limit = item["monthly_token_limit"]
                 rows.append({**item, "tokens_used_this_month": used, "tokens_left_this_month": None if limit is None else max(0, int(limit) - used)})
             st.dataframe(pd.DataFrame(rows), hide_index=True)
+            active_keys = {item["id"]: item for item in managed_keys if item["active"]}
+            if active_keys:
+                with st.container(horizontal=True, vertical_alignment="bottom"):
+                    revoke_id = st.selectbox(
+                        "Revoke a key", list(active_keys),
+                        format_func=lambda value: f"{active_keys[value]['name']} ({active_keys[value]['team']}) · {active_keys[value]['key_prefix']}",
+                    )
+                    if st.button("Revoke", icon=":material/block:"):
+                        run_async(with_storage("revoke_client_key", revoke_id))
+                        st.rerun()

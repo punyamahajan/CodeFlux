@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from codeflux.schemas import GeminiRequest, Message, NormalizedRequest, NormalizedResponse
+from codeflux.schemas import (
+    GeminiRequest,
+    Message,
+    NormalizedRequest,
+    NormalizedResponse,
+    StreamChunk,
+    Usage,
+)
 
 
 def openai_request(payload: dict[str, Any], operation: str) -> NormalizedRequest:
@@ -34,6 +41,14 @@ def to_openai(response: NormalizedResponse, operation: str, logical_model: str) 
         if response.tool_calls:
             choice["message"]["tool_calls"] = response.tool_calls
     return {"id": response.id, "object": "text_completion" if operation == "completion" else "chat.completion", "created": response.created, "model": logical_model, "choices": [choice], "usage": response.usage.model_dump()}
+
+
+def gemini_chunk(chunk: StreamChunk) -> dict[str, Any]:
+    response = NormalizedResponse(model=chunk.model, content=chunk.content, finish_reason=chunk.finish_reason, usage=chunk.usage or Usage())
+    data = to_gemini(response)
+    if not chunk.finish_reason:
+        del data["candidates"][0]["finishReason"]
+    return data
 
 
 def to_gemini(response: NormalizedResponse) -> dict[str, Any]:

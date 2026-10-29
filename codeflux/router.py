@@ -21,6 +21,10 @@ from codeflux.storage import UsageRepository
 logger = logging.getLogger("codeflux.router")
 
 
+def _is_embedding_route(route: RouteConfig) -> bool:
+    return all("embed" in candidate.model for candidate in route.candidates)
+
+
 @dataclass
 class RoutingResult:
     response: NormalizedResponse
@@ -44,6 +48,34 @@ class RoutingEngine:
         self._latencies: defaultdict[str, deque[float]] = defaultdict(lambda: deque(maxlen=50))
         self.last_route: dict[str, object] | None = None
 
+    def resolve(self, model: str, operation: str = "chat") -> tuple[str, RouteConfig]:
+        """Map any model name a client sends onto a configured route.
+
+        Clients written for OpenAI or Gemini send real model names such as
+        ``gpt-4o-mini`` or ``models/gemini-2.0-flash``. Exact aliases win, then a
+        route containing that model (with the matching candidates moved first),
+        then the default route for the operation.
+        """
+        routes = self.config.routes
+        name = model.removeprefix("models/")
+        if name in routes:
+            return name, routes[name]
+        wants_embedding = operation == "embedding"
+        for alias, route in routes.items():
+            if _is_embedding_route(route) != wants_embedding:
+                continue
+            matching = [c for c in route.candidates if c.model == name or f"{c.provider}/{c.model}" == name]
+            if matching:
+                others = [c for c in route.candidates if c not in matching]
+                return alias, route.model_copy(update={"candidates": matching + others})
+        default = self.config.default_embedding_route if wants_embedding else self.config.default_route
+        if default in routes:
+            return default, routes[default]
+        for alias, route in routes.items():
+            if _is_embedding_route(route) == wants_embedding:
+                return alias, route
+        raise NoProviderAvailable(f"no route configured for model '{model}'")
+
     def _ordered(self, alias: str, route: RouteConfig) -> list[CandidateConfig]:
         candidates = list(route.candidates)
         if route.strategy == "round-robin":
@@ -62,13 +94,11 @@ class RoutingEngine:
         return candidates
 
     async def route(self, request: NormalizedRequest, team: str) -> RoutingResult:
-        route = self.config.routes.get(request.model)
-        if not route:
-            raise NoProviderAvailable(f"no route configured for model alias '{request.model}'")
+        alias, route = self.resolve(request.model, request.operation)
         if route.allowed_teams and team not in route.allowed_teams:
-            raise PermissionError(f"team '{team}' cannot access route '{request.model}'")
+            raise PermissionError(f"team '{team}' cannot access route '{alias}'")
         outgoing = self.redactor.redact(request) if route.pii_redaction else request
-        candidates = self._ordered(request.model, route)
+        candidates = self._ordered(alias, route)
         if route.ollama_fallback_model and not any(item.provider == "ollama" for item in candidates):
             candidates.append(
                 CandidateConfig(
@@ -119,16 +149,18 @@ class RoutingEngine:
                 FAILOVERS.labels(candidate.provider, type(exc).__name__).inc()
                 REQUESTS.labels(request.model, candidate.provider, "error").inc()
                 logger.warning("provider_failed", extra={"route": request.model, "provider": candidate.provider, "error": str(exc), "attempts": len(attempts)})
-        raise NoProviderAvailable(f"all providers failed for '{request.model}': {last_error or 'timeout/circuit open'}")
+        raise NoProviderAvailable(
+            f"all providers failed for '{request.model}' (tried: {', '.join(attempts) or 'none'}): "
+            f"{last_error or 'timeout/circuit open'}"
+        )
 
     async def route_stream(self, request: NormalizedRequest, team: str) -> StreamingRoutingResult:
         """Choose a provider by obtaining its first chunk, allowing pre-stream failover."""
-        route = self.config.routes.get(request.model)
-        if not route:
-            raise NoProviderAvailable(f"no route configured for model alias '{request.model}'")
+        alias, route = self.resolve(request.model, request.operation)
         if route.allowed_teams and team not in route.allowed_teams:
-            raise PermissionError(f"team '{team}' cannot access route '{request.model}'")
-        candidates = self._ordered(request.model, route)
+            raise PermissionError(f"team '{team}' cannot access route '{alias}'")
+        outgoing = self.redactor.redact(request) if route.pii_redaction else request
+        candidates = self._ordered(alias, route)
         if route.ollama_fallback_model and not any(c.provider == "ollama" for c in candidates):
             candidates.append(
                 CandidateConfig(
@@ -150,7 +182,7 @@ class RoutingEngine:
                 continue
             attempts.append(candidate.provider)
             stream = self.registry.get(candidate.provider).stream_chat_completion(
-                request.model_copy(update={"model": candidate.model, "stream": True}), api_key
+                outgoing.model_copy(update={"model": candidate.model, "stream": True}), api_key
             )
             try:
                 first = await asyncio.wait_for(anext(stream), timeout=min(candidate.timeout_seconds, max(0.01, deadline - time.monotonic())))
@@ -186,4 +218,6 @@ class RoutingEngine:
             except Exception as exc:  # noqa: BLE001 - adapters may raise vendor SDK exceptions
                 await self.circuits.failure(identity)
                 FAILOVERS.labels(candidate.provider, type(exc).__name__).inc()
-        raise NoProviderAvailable(f"all streaming providers failed for '{request.model}'")
+        raise NoProviderAvailable(
+            f"all streaming providers failed for '{request.model}' (tried: {', '.join(attempts) or 'none'})"
+        )

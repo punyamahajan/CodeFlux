@@ -6,10 +6,15 @@ provider_base_urls:
   # Use http://ollama:11434/v1 when CodeFlux itself runs in Docker Compose.
   ollama: http://localhost:11434/v1
 
+# Any model name that is not a route alias or a candidate model below
+# (for example "gpt-4" or "gemini-pro") is served by these routes.
+default_route: gemini-tier
+default_embedding_route: embeddings
+
 routes:
   gpt-4-tier:
     strategy: priority
-    total_timeout_seconds: 180
+    total_timeout_seconds: 420
     pii_redaction: false
     candidates:
       - provider: openai
@@ -28,11 +33,13 @@ routes:
         model: gemini-flash-latest
         api_key_ref: gemini-primary
         timeout_seconds: 15
-    ollama_fallback_model: llama3.2
-    ollama_fallback_timeout_seconds: 120
+    # Coding model: llama3.2 (3B) could not produce working multi-file apps.
+    ollama_fallback_model: qwen2.5-coder
+    ollama_fallback_timeout_seconds: 360
 
   gemini-tier:
     strategy: priority
+    total_timeout_seconds: 420
     candidates:
       - provider: gemini
         model: gemini-3.1-flash-lite
@@ -53,8 +60,9 @@ routes:
       - provider: openrouter
         model: google/gemini-2.0-flash-001
         api_key_ref: openrouter-primary
-    ollama_fallback_model: llama3.2
-    ollama_fallback_timeout_seconds: 120
+    # Coding model: llama3.2 (3B) could not produce working multi-file apps.
+    ollama_fallback_model: qwen2.5-coder
+    ollama_fallback_timeout_seconds: 360
 
   embeddings:
     strategy: round-robin

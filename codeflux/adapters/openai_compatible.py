@@ -58,7 +58,8 @@ class OpenAICompatibleAdapter:
                 f"{self.base_url}{path}", json=payload, headers=self._headers(api_key)
             )
         except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name} transport failure: {exc}") from exc
+            # Timeouts have an empty str(); the type is what tells you what happened.
+            raise ProviderError(f"{self.name} transport failure: {type(exc).__name__} {exc}".rstrip()) from exc
         if response.is_error:
             detail = response.text[:500]
             raise ProviderError(

@@ -106,7 +106,9 @@ Open a second terminal, activate the same environment, and run:
 streamlit run streamlit_app.py --server.address 0.0.0.0
 ```
 
-Open `http://localhost:8501`, enter the dashboard password, then put the admin bootstrap key from `CODEFLUX_GATEWAY_KEYS` (`admin-key`) into the sidebar.
+Open `http://localhost:8501` and sign in on the **Admin** tab with your dashboard password. That's it: the dashboard uses the admin key from `CODEFLUX_GATEWAY_KEYS` (the entry ending in `:admin`) automatically, and the gateway URL defaults to `CODEFLUX_DASHBOARD_GATEWAY_URL`. Teammates sign in on the **Teammate** tab with their personal `cf_...` key instead.
+
+If `CODEFLUX_DASHBOARD_PASSWORD` is empty, the dashboard skips sign-in and opens as admin (handy for single-user local use).
 
 ### 5. Add a provider key
 
@@ -139,7 +141,17 @@ The provider key is encrypted before it is stored in `data/codeflux.db`. CodeFlu
     $response.choices[0].message.content
 ```
 
-OpenAI Python clients can use CodeFlux by setting `base_url`:
+### 7. Use your CodeFlux key in any project
+
+Open **API access** in the dashboard to copy your key, base URL, and ready-made snippets. A CodeFlux key works like an OpenAI or Gemini key:
+
+- **Any OpenAI-compatible app or tool**: set `OPENAI_BASE_URL=http://localhost:8000/v1` and `OPENAI_API_KEY=<your CodeFlux key>`.
+- **Gemini SDK** (`google-genai`): `genai.Client(api_key="<key>", http_options={"base_url": "http://localhost:8000"})`.
+- **Raw HTTP**: send the key as `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, or `?key=`.
+
+The `model` can be a route alias (`gemini-tier`), a provider model name from `routes.yaml` (`gpt-4o-mini`, `gemini-2.0-flash`; that candidate is tried first), or any other name, which goes to `default_route` with normal failover.
+
+Python example:
 
 ```python
 from openai import OpenAI
@@ -172,22 +184,20 @@ Your laptop acts as the shared server hosting the gateway, database, and control
    python -m codeflux
    streamlit run streamlit_app.py --server.address 0.0.0.0
    ```
-3. Open `http://localhost:8501`, log in, and enter `admin-key` in the sidebar.
-4. Go to **Team access** > **Create a personal CodeFlux key**:
+3. Set `CODEFLUX_PUBLIC_URL=http://<YOUR_WIFI_IP>:8000` in `.env` so the snippets in **API access** show an address teammates can reach.
+4. Open `http://localhost:8501`, sign in with the dashboard password, and go to **API access** > **Teammate keys**:
    - Enter member name and team (e.g. `engineering`).
    - Click **Create CodeFlux key** and copy the generated `cf_...` key.
 5. Share with your teammate:
    - Dashboard URL: `http://<YOUR_WIFI_IP>:8501`
-   - Dashboard Password: (from your `.env`)
-   - Their personal CodeFlux key: `cf_...`
+   - Their personal CodeFlux key: `cf_...` (this is all they need to sign in)
 
 ### 2. Laptop 2 (Teammate)
 The teammate does **not** need to run servers. They simply connect to the Host:
 1. Connect to the same Wi-Fi network.
-2. Open browser at `http://<HOST_WIFI_IP>:8501` and enter the dashboard password.
-3. In the sidebar under **Connection**, enter their personal `cf_...` key.
-4. Go to **Quota pool** > enter contributor name, select provider (e.g. `gemini`), paste their provider API key, and click **Encrypt and add to pool**.
-5. Use CodeFlux in their local code / Python scripts:
+2. Open browser at `http://<HOST_WIFI_IP>:8501` and sign in on the **Teammate** tab with their personal `cf_...` key.
+3. Go to **Quota pool** > enter contributor name, select provider (e.g. `gemini`), paste their provider API key, and click **Encrypt and add to pool**.
+4. Use CodeFlux in their local code / Python scripts:
    ```python
    from openai import OpenAI
 
@@ -311,7 +321,7 @@ python -m ruff check codeflux streamlit_app.py tests
 
 ### `401 invalid or missing CodeFlux API key`
 
-Confirm the bearer key is either present in `CODEFLUX_GATEWAY_KEYS` or was created in **Team access** and has not been revoked.
+Confirm the bearer key is either present in `CODEFLUX_GATEWAY_KEYS` or was created in **API access** and has not been revoked.
 
 ### `429 monthly CodeFlux token budget exhausted`
 

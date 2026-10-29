@@ -36,11 +36,17 @@ class AppConfig(BaseModel):
     routes: dict[str, RouteConfig]
     circuit_breaker: CircuitConfig = Field(default_factory=CircuitConfig)
     provider_base_urls: dict[str, str] = Field(default_factory=dict)
+    # Used when a client sends a model name that matches no route or candidate.
+    default_route: str | None = None
+    default_embedding_route: str | None = None
 
     @model_validator(mode="after")
     def routes_have_candidates(self) -> AppConfig:
         if any(not route.candidates for route in self.routes.values()):
             raise ValueError("every route must contain at least one candidate")
+        for name in (self.default_route, self.default_embedding_route):
+            if name and name not in self.routes:
+                raise ValueError(f"default route '{name}' is not defined in routes")
         return self
 
 
@@ -57,6 +63,8 @@ class Settings(BaseSettings):
     port: int = 8000
     dashboard_password: str = ""
     dashboard_gateway_url: str = "http://localhost:8000"
+    # Address that apps should call; differs from dashboard_gateway_url inside Docker.
+    public_url: str = ""
 
     def client_keys(self) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -65,6 +73,9 @@ class Settings(BaseSettings):
             if key:
                 result[key] = team if separator else "default"
         return result
+
+    def admin_key(self) -> str | None:
+        return next((key for key, team in self.client_keys().items() if team == "admin"), None)
 
 
 def load_config(path: Path | str) -> AppConfig:
