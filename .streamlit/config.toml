@@ -1,38 +1,41 @@
 [theme]
-base = "light"
-primaryColor = "#4F46E5"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F7F8FC"
-codeBackgroundColor = "#F1F3F9"
-textColor = "#182033"
-linkColor = "#4338CA"
-borderColor = "#E2E6F0"
-baseRadius = "10px"
+base = "dark"
+primaryColor = "#7C6DFF"
+backgroundColor = "#080B16"
+secondaryBackgroundColor = "#11172A"
+codeBackgroundColor = "#0B1020"
+textColor = "#E8ECF8"
+linkColor = "#68D8F7"
+borderColor = "#29324D"
+baseRadius = "14px"
 buttonRadius = "10px"
 showWidgetBorder = true
 showSidebarBorder = true
 font = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+headingFont = "'Inter':https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
 baseFontSize = 15
 headingFontSizes = ["38px", "28px", "22px", "18px", "15px", "13px"]
 headingFontWeights = [700, 700, 600, 600, 600, 600]
 linkUnderline = false
-blueColor = "#4F46E5"
-greenColor = "#15803D"
-orangeColor = "#C2410C"
-redColor = "#DC2626"
-violetColor = "#7C3AED"
-grayColor = "#64748B"
-chartCategoricalColors = ["#4F46E5", "#0891B2", "#15803D", "#7C3AED", "#EA580C", "#DC2626"]
-dataframeBorderColor = "#E2E6F0"
-dataframeHeaderBackgroundColor = "#F7F8FC"
+blueColor = "#42BFF5"
+greenColor = "#35D6A0"
+orangeColor = "#FFB454"
+redColor = "#FF6B7A"
+violetColor = "#9B8CFF"
+grayColor = "#8F9AB8"
+chartCategoricalColors = ["#7C6DFF", "#42BFF5", "#35D6A0", "#C084FC", "#FFB454", "#FF6B7A"]
+chartSequentialColors = ["#10162A", "#17213A", "#1D2E4B", "#233D5C", "#285071", "#2D6686", "#35809E", "#3E9CB8", "#51B8D2", "#68D8F7"]
+dataframeBorderColor = "#29324D"
+dataframeHeaderBackgroundColor = "#151D33"
 
 [theme.sidebar]
-backgroundColor = "#F7F8FC"
-secondaryBackgroundColor = "#EEF0F7"
-textColor = "#182033"
-borderColor = "#E2E6F0"
-primaryColor = "#4F46E5"
+backgroundColor = "#0C1120"
+secondaryBackgroundColor = "#151D33"
+codeBackgroundColor = "#080B16"
+textColor = "#E8ECF8"
+borderColor = "#252E48"
+primaryColor = "#8B7DFF"
 
 [server]
 headless = true

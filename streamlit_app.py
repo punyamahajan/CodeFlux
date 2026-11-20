@@ -34,6 +34,214 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 st.set_page_config(page_title="CodeFlux — AI task control room", page_icon=":material/hub:", layout="wide")
 
 
+def apply_visual_polish() -> None:
+    """Add a focused motion layer on top of Streamlit's native dark theme."""
+    st.html(
+        """
+        <style>
+        :root { --flux-violet: #7c6dff; --flux-cyan: #42bff5; --flux-mint: #35d6a0; }
+        .stApp {
+            background:
+                radial-gradient(circle at 82% 4%, rgba(66,191,245,.10), transparent 27rem),
+                radial-gradient(circle at 12% 16%, rgba(124,109,255,.13), transparent 30rem),
+                #080b16;
+        }
+        [data-testid="stMainBlockContainer"] {
+            max-width: 1440px; padding-top: 2.2rem; padding-bottom: 4rem;
+        }
+        [data-testid="stSidebar"] {
+            background-image: linear-gradient(180deg, rgba(124,109,255,.07), transparent 30%);
+        }
+        .st-key-hero {
+            position: relative; overflow: hidden;
+            padding: clamp(1.25rem, 3vw, 2.35rem) !important;
+            background: linear-gradient(120deg, rgba(124,109,255,.16), rgba(66,191,245,.06) 55%, rgba(53,214,160,.05)), rgba(17,23,42,.78);
+            border-color: rgba(124,109,255,.35) !important;
+            box-shadow: 0 24px 70px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05);
+            animation: flux-rise .65s cubic-bezier(.2,.8,.2,1) both;
+        }
+        .st-key-hero::after {
+            content: ""; position: absolute; width: 18rem; height: 18rem;
+            right: -6rem; top: -9rem; border-radius: 999px;
+            background: rgba(66,191,245,.16); filter: blur(2px);
+            box-shadow: 0 0 90px rgba(124,109,255,.28);
+            animation: flux-float 7s ease-in-out infinite; pointer-events: none;
+        }
+        .st-key-hero h1 {
+            letter-spacing: -.045em;
+            background: linear-gradient(100deg, #fff 12%, #c9c3ff 55%, #70dcfa);
+            -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .flux-kicker {
+            color: #8ee5fb; font-size: .72rem; font-weight: 700;
+            letter-spacing: .16em; text-transform: uppercase;
+        }
+        [data-testid="stMetric"] {
+            min-width: 12rem;
+            background: linear-gradient(145deg, rgba(25,34,61,.88), rgba(14,20,38,.92));
+            border-color: rgba(92,111,158,.32) !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,.16);
+            transition: transform .22s ease, border-color .22s ease, box-shadow .22s ease;
+            animation: flux-rise .55s ease both;
+        }
+        [data-testid="stMetric"]:hover {
+            transform: translateY(-3px); border-color: rgba(124,109,255,.68) !important;
+            box-shadow: 0 16px 38px rgba(0,0,0,.24), 0 0 0 1px rgba(66,191,245,.08);
+        }
+        [data-testid="stMetricValue"] { color: #f6f7ff; letter-spacing: -.035em; }
+        [data-baseweb="tab-list"] {
+            gap: .35rem; padding: .35rem; border: 1px solid rgba(80,94,135,.25);
+            border-radius: 14px; background: rgba(13,18,34,.76);
+        }
+        [data-baseweb="tab"] {
+            border-radius: 10px; transition: background .2s ease, color .2s ease, transform .2s ease;
+        }
+        [data-baseweb="tab"]:hover { transform: translateY(-1px); }
+        [aria-selected="true"][data-baseweb="tab"] {
+            background: linear-gradient(135deg, rgba(124,109,255,.22), rgba(66,191,245,.12));
+        }
+        [data-testid="stButton"] button, [data-testid="stFormSubmitButton"] button {
+            font-weight: 650; box-shadow: 0 8px 22px rgba(0,0,0,.16);
+            transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+        }
+        [data-testid="stButton"] button:hover, [data-testid="stFormSubmitButton"] button:hover {
+            transform: translateY(-2px); box-shadow: 0 12px 30px rgba(67,79,190,.25);
+        }
+        [data-testid="stProgress"] > div > div > div > div {
+            background: linear-gradient(90deg, var(--flux-violet), var(--flux-cyan), var(--flux-mint));
+            background-size: 180% 100%; animation: flux-shimmer 2.4s linear infinite;
+        }
+        [data-testid="stDataFrame"], [data-testid="stForm"], [data-testid="stExpander"] {
+            box-shadow: 0 12px 32px rgba(0,0,0,.12);
+        }
+        .flux-bot-wrap {
+            position: fixed; right: clamp(1rem, 2.5vw, 2.5rem); bottom: 1.6rem;
+            z-index: 999; width: 84px; height: 112px; pointer-events: none;
+            animation: flux-bot-float 4.2s ease-in-out infinite;
+            filter: drop-shadow(0 16px 18px rgba(0,0,0,.34));
+        }
+        .flux-bot-shadow {
+            position: absolute; left: 15px; bottom: 0; width: 54px; height: 10px;
+            border-radius: 50%; background: rgba(66,191,245,.18); filter: blur(5px);
+            animation: flux-bot-shadow 4.2s ease-in-out infinite;
+        }
+        .flux-bot-antenna {
+            position: absolute; top: 1px; left: 40px; width: 4px; height: 18px;
+            border-radius: 4px; background: linear-gradient(#42bff5, #7c6dff);
+            transform-origin: bottom; animation: flux-antenna 3.4s ease-in-out infinite;
+        }
+        .flux-bot-antenna::before {
+            content: ""; position: absolute; top: -4px; left: -3px; width: 10px; height: 10px;
+            border-radius: 50%; background: #70e2ff; box-shadow: 0 0 12px #42bff5;
+            animation: flux-pulse 1.8s ease-in-out infinite;
+        }
+        .flux-bot-head {
+            position: absolute; top: 17px; left: 7px; width: 70px; height: 54px;
+            border: 1px solid rgba(143,156,255,.75); border-radius: 20px 20px 17px 17px;
+            background: linear-gradient(145deg, #2a3560, #151d38 62%, #10162b);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.15), 0 0 25px rgba(124,109,255,.22);
+        }
+        .flux-bot-head::before, .flux-bot-head::after {
+            content: ""; position: absolute; top: 17px; width: 11px; height: 13px;
+            border-radius: 50%; background: #75e5ff;
+            box-shadow: 0 0 10px rgba(66,191,245,.9), inset 0 -3px 0 rgba(66,191,245,.28);
+            animation: flux-blink 4.8s infinite;
+        }
+        .flux-bot-head::before { left: 15px; }
+        .flux-bot-head::after { right: 15px; animation-delay: .06s; }
+        .flux-bot-mouth {
+            position: absolute; left: 28px; bottom: 10px; width: 13px; height: 5px;
+            border-bottom: 2px solid #9b8cff; border-radius: 0 0 10px 10px;
+        }
+        .flux-bot-ear {
+            position: absolute; top: 34px; width: 8px; height: 20px;
+            border-radius: 5px; background: #796bea; box-shadow: 0 0 9px rgba(124,109,255,.6);
+        }
+        .flux-bot-ear.left { left: 1px; }
+        .flux-bot-ear.right { right: 1px; }
+        .flux-bot-body {
+            position: absolute; top: 67px; left: 18px; width: 48px; height: 33px;
+            border: 1px solid rgba(112,226,255,.42); border-radius: 10px 10px 17px 17px;
+            background: linear-gradient(145deg, #202b50, #11182e);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.1);
+        }
+        .flux-bot-core {
+            position: absolute; left: 18px; top: 9px; width: 10px; height: 10px;
+            border-radius: 50%; background: #35d6a0;
+            box-shadow: 0 0 12px rgba(53,214,160,.9);
+            animation: flux-pulse 2.2s ease-in-out infinite;
+        }
+        .flux-bot-arm {
+            position: absolute; top: 73px; width: 8px; height: 25px;
+            border-radius: 8px; background: #5861ac; transform-origin: top;
+        }
+        .flux-bot-arm.left { left: 12px; transform: rotate(18deg); }
+        .flux-bot-arm.right { right: 12px; animation: flux-wave 2.8s ease-in-out infinite; }
+        @keyframes flux-rise {
+            from { opacity: 0; transform: translateY(12px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes flux-float {
+            0%,100% { transform: translate3d(0,0,0) scale(1); }
+            50% { transform: translate3d(-18px,20px,0) scale(1.06); }
+        }
+        @keyframes flux-shimmer { to { background-position: -180% 0; } }
+        @keyframes flux-bot-float {
+            0%,100% { transform: translateY(0) rotate(-1deg); }
+            50% { transform: translateY(-14px) rotate(1.5deg); }
+        }
+        @keyframes flux-bot-shadow {
+            0%,100% { transform: scale(1); opacity: .7; }
+            50% { transform: scale(.72); opacity: .35; }
+        }
+        @keyframes flux-antenna {
+            0%,100% { transform: rotate(-5deg); }
+            50% { transform: rotate(7deg); }
+        }
+        @keyframes flux-wave {
+            0%,45%,100% { transform: rotate(-18deg); }
+            55% { transform: rotate(-55deg); }
+            65% { transform: rotate(-12deg); }
+            75% { transform: rotate(-48deg); }
+        }
+        @keyframes flux-blink {
+            0%,44%,48%,100% { transform: scaleY(1); }
+            46% { transform: scaleY(.08); }
+        }
+        @keyframes flux-pulse {
+            0%,100% { transform: scale(.88); opacity: .75; }
+            50% { transform: scale(1.12); opacity: 1; }
+        }
+        @media (max-width: 720px) {
+            [data-testid="stMainBlockContainer"] { padding-top: 1.2rem; }
+            .st-key-hero { padding: 1.1rem !important; }
+            .st-key-hero::after { opacity: .45; }
+            .flux-bot-wrap { right: .45rem; bottom: .65rem; scale: .78; transform-origin: bottom right; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+                scroll-behavior: auto !important; transition-duration: .01ms !important;
+            }
+        }
+        </style>
+        <div class="flux-bot-wrap" aria-hidden="true">
+            <div class="flux-bot-shadow"></div>
+            <div class="flux-bot-antenna"></div>
+            <div class="flux-bot-ear left"></div>
+            <div class="flux-bot-ear right"></div>
+            <div class="flux-bot-head"><div class="flux-bot-mouth"></div></div>
+            <div class="flux-bot-arm left"></div>
+            <div class="flux-bot-arm right"></div>
+            <div class="flux-bot-body"><div class="flux-bot-core"></div></div>
+        </div>
+        """
+    )
+
+
+apply_visual_polish()
+
+
 def run_async(coro: Coroutine[Any, Any, Any]) -> Any:
     return asyncio.run(coro)
 
@@ -237,7 +445,8 @@ with st.sidebar:
             on_click=lambda: st.session_state.update(gateway_url=settings.dashboard_gateway_url),
         )
 
-with st.container(border=True):
+with st.container(border=True, key="hero"):
+    st.markdown('<span class="flux-kicker">AI orchestration workspace</span>', unsafe_allow_html=True)
     st.title("CodeFlux", icon=":material/hub:")
     st.markdown("### One place to plan, route, and complete work with the right AI model.")
     st.write(
