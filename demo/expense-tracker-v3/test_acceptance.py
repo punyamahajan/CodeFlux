@@ -9,7 +9,7 @@ APP = str(Path(__file__).resolve().parent / "main.py")  # the file the README sa
 
 
 def page_text(app):
-    parts = [str(element.value) for kind in ("markdown", "text", "caption", "success", "info", "warning", "error") for element in getattr(app, kind)]
+    parts = [str(element.value) for kind in ("header", "markdown", "text", "caption", "success", "info", "warning", "error") for element in getattr(app, kind)]
     parts += [f"{metric.label} {metric.value}" for metric in app.metric]
     parts += [frame.value.to_string() for frame in app.dataframe] + [table.value.to_string() for table in app.table]
     return "\n".join(parts)

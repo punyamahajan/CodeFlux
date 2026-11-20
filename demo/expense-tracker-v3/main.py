@@ -1,5 +1,6 @@
 import streamlit as st
 from expenses import ExpenseManager
+from category_totals import render_category_totals
 from save_load import load_expenses, save_expenses
 
 # Load saved data
@@ -16,6 +17,5 @@ with st.sidebar:
 
 # Display total expenses by category
 st.title("Expense Tracker")
-category_totals = expenses_manager.get_category_totals()
-for category, total in category_totals.items():
-    st.metric(category, f"${total:.2f}")
+st.header("Category Totals")
+render_category_totals(expenses_manager.get_expenses())

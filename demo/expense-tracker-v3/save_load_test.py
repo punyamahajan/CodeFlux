@@ -12,6 +12,18 @@ class TestSaveLoad(unittest.TestCase):
             expenses = load_expenses(tmp_filename)
             self.assertEqual(expenses, [])
 
+    def test_load_empty_file(self):
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.json') as tmp:
+            tmp_filename = tmp.name
+        self.assertEqual(load_expenses(tmp_filename), [])
+
+    def test_load_invalid_json(self):
+        with tempfile.NamedTemporaryFile('w', delete=False, suffix='.json') as tmp:
+            tmp.write('{invalid}')
+            tmp_filename = tmp.name
+        with self.assertRaises(json.JSONDecodeError):
+            load_expenses(tmp_filename)
+
     def test_save_expenses(self):
         expenses = [{"amount": 100, "category": "Groceries"}]
         tmp_filename = tempfile.NamedTemporaryFile('w', delete=False, suffix='.json').name
