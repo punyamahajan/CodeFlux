@@ -15,4 +15,3 @@ class NoProviderAvailable(CodeFluxError):
 
 class CircuitOpen(CodeFluxError):
     pass
-

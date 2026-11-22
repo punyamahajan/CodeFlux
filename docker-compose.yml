@@ -8,39 +8,9 @@ services:
       - ./config:/app/config:ro
       - ./data:/app/data
     depends_on:
-      redis:
-        condition: service_healthy
       ollama:
         condition: service_started
     restart: unless-stopped
-
-  dashboard:
-    build: .
-    command: streamlit run streamlit_app.py --server.address 0.0.0.0 --server.port 8501
-    ports:
-      - "8501:8501"
-    env_file: .env
-    environment:
-      CODEFLUX_DASHBOARD_GATEWAY_URL: http://codeflux:8000
-      # Shown in the API access snippets; the internal address above is not reachable by apps.
-      CODEFLUX_PUBLIC_URL: ${CODEFLUX_PUBLIC_URL:-http://localhost:8000}
-    volumes:
-      - ./config:/app/config:ro
-      - ./data:/app/data
-    depends_on:
-      - codeflux
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   ollama:
     image: ollama/ollama:latest
@@ -50,6 +20,4 @@ services:
       - ollama-data:/root/.ollama
 
 volumes:
-  redis-data:
   ollama-data:
-

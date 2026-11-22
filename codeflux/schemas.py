@@ -91,7 +91,3 @@ class GeminiRequest(BaseModel):
     contents: list[GeminiContent]
     systemInstruction: GeminiContent | None = None
     generationConfig: dict[str, Any] | None = None
-
-
-class IdeTaskCompletion(BaseModel):
-    result: str = Field(min_length=1)

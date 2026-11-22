@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: omnikey
+    runtime: docker
+    plan: free
+    branch: main
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: ENV
+        value: prod
+      - key: DEMO_MODE
+        value: 'true'
+      - key: DATABASE_URL
+        sync: false
+      - key: MASTER_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: KEY_HMAC_SECRET
+        generateValue: true

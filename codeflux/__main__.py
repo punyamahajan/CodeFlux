@@ -1,6 +1,6 @@
 import uvicorn
 
-from codeflux.config import Settings
+from codeflux.settings import Settings
 
 
 def main() -> None:
@@ -10,4 +10,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

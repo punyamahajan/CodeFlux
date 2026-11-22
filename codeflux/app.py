@@ -11,29 +11,28 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from codeflux.adapters.registry import AdapterRegistry
-from codeflux.auth import authenticate
-from codeflux.circuit import CircuitBreaker
-from codeflux.config import Settings, load_config
 from codeflux.errors import NoProviderAvailable
-from codeflux.keys import KeyPool
-from codeflux.logging import configure_logging
-from codeflux.normalization import (
+from codeflux.gateway.auth import authenticate
+from codeflux.gateway.circuit import CircuitBreaker
+from codeflux.gateway.keypool import KeyPool
+from codeflux.gateway.normalization import (
     gemini_chunk,
     gemini_request,
     openai_request,
     to_gemini,
     to_openai,
 )
-from codeflux.pii import PIIRedactor
-from codeflux.router import RoutingEngine
-from codeflux.schemas import GeminiRequest, IdeTaskCompletion
+from codeflux.gateway.pii import PIIRedactor
+from codeflux.gateway.router import RoutingEngine
+from codeflux.logging import configure_logging
+from codeflux.providers.registry import AdapterRegistry
+from codeflux.schemas import GeminiRequest
+from codeflux.settings import Settings, load_config
 from codeflux.storage import (
     ClientKeyRepository,
     CredentialVault,
     Database,
     UsageRepository,
-    WorkflowRepository,
 )
 
 
@@ -52,35 +51,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for reference, item in credentials.items():
                 await vault.put(reference, item["provider"], item["key"])
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            raise RuntimeError("CODEFLUX_CREDENTIALS_JSON must map refs to provider/key objects") from exc
+            raise RuntimeError(
+                "CODEFLUX_CREDENTIALS_JSON must map refs to provider/key objects"
+            ) from exc
         # No read limit here: each candidate's timeout_seconds (enforced by the router) decides,
         # so slow local models are not cut off at a fixed 30 seconds.
         client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10))
         registry = AdapterRegistry(client, config.provider_base_urls)
-        breaker = CircuitBreaker(config.circuit_breaker.failure_threshold, config.circuit_breaker.cooldown_seconds)
+        breaker = CircuitBreaker(
+            config.circuit_breaker.failure_threshold, config.circuit_breaker.cooldown_seconds
+        )
         app.state.config = config
         app.state.database = database
         app.state.client = client
         app.state.registry = registry
         app.state.breaker = breaker
         app.state.client_keys = settings.client_keys()
-        app.state.client_key_repository = ClientKeyRepository(database.sessions, settings.master_secret)
+        app.state.client_key_repository = ClientKeyRepository(
+            database.sessions, settings.master_secret
+        )
         app.state.usage_repository = UsageRepository(database.sessions)
-        app.state.workflow_repository = WorkflowRepository(database.sessions)
-        app.state.router = RoutingEngine(config, registry, KeyPool(vault), breaker, app.state.usage_repository, PIIRedactor())
+        app.state.router = RoutingEngine(
+            config, registry, KeyPool(vault), breaker, app.state.usage_repository, PIIRedactor()
+        )
         yield
         await client.aclose()
         await database.close()
 
     app = FastAPI(title="CodeFlux", version="0.1.0", lifespan=lifespan)
     # Browser apps call the gateway directly; the API key, not the origin, is the credential.
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    )
 
     def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
         # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
         return JSONResponse(
             status_code=status_code,
-            content={"error": {"message": message, "type": error_type, "code": status_code}, "detail": message},
+            content={
+                "error": {"message": message, "type": error_type, "code": status_code},
+                "detail": message,
+            },
         )
 
     @app.exception_handler(NoProviderAvailable)
@@ -93,25 +104,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(_: Request, exc: StarletteHTTPException):
-        error_type = {401: "invalid_api_key", 429: "insufficient_quota"}.get(exc.status_code, "invalid_request_error")
+        error_type = {401: "invalid_api_key", 429: "insufficient_quota"}.get(
+            exc.status_code, "invalid_request_error"
+        )
         return error_response(exc.status_code, str(exc.detail), error_type)
 
     @app.get("/health")
     async def health():
         return {"status": "ok", "service": "codeflux"}
 
+    @app.get("/healthz")
+    async def healthz():
+        return {"status": "ok"}
+
     @app.get("/health/providers")
     async def provider_health(request: Request, _: str = Depends(authenticate)):
-        providers = {candidate.provider for route in request.app.state.config.routes.values() for candidate in route.candidates}
-        results = [await request.app.state.registry.get(provider).health_check() for provider in sorted(providers)]
-        return {"providers": [result.model_dump() for result in results], "circuits": request.app.state.breaker.snapshot()}
+        providers = {
+            candidate.provider
+            for route in request.app.state.config.routes.values()
+            for candidate in route.candidates
+        }
+        results = [
+            await request.app.state.registry.get(provider).health_check()
+            for provider in sorted(providers)
+        ]
+        return {
+            "providers": [result.model_dump() for result in results],
+            "circuits": request.app.state.breaker.snapshot(),
+        }
 
     @app.get("/v1/models")
     async def models(request: Request, team: str = Depends(authenticate)):
         data = []
         for alias, route in request.app.state.config.routes.items():
             if not route.allowed_teams or team in route.allowed_teams:
-                data.append({"id": alias, "object": "model", "owned_by": "codeflux", "providers": sorted({c.provider for c in route.candidates})})
+                data.append(
+                    {
+                        "id": alias,
+                        "object": "model",
+                        "owned_by": "codeflux",
+                        "providers": sorted({c.provider for c in route.candidates}),
+                    }
+                )
         return {"object": "list", "data": data}
 
     @app.get("/v1/me")
@@ -147,11 +181,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         delta["content"] = chunk.content
                     if chunk.tool_calls:
                         delta["tool_calls"] = chunk.tool_calls
-                    data = {"id": chunk.id, "object": "chat.completion.chunk", "created": created, "model": normalized.model, "choices": [{"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}]}
+                    data = {
+                        "id": chunk.id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": normalized.model,
+                        "choices": [
+                            {"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}
+                        ],
+                    }
                     yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
 
-            return StreamingResponse(events(), media_type="text/event-stream", headers={"X-CodeFlux-Provider": result.provider})
+            return StreamingResponse(
+                events(),
+                media_type="text/event-stream",
+                headers={"X-CodeFlux-Provider": result.provider},
+            )
         result = await request.app.state.router.route(normalized, team)
         response = to_openai(result.response, operation, normalized.model)
         response["codeflux"] = {"provider": result.provider, "attempts": result.attempts}
@@ -169,57 +215,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def embeddings(request: Request, team: str = Depends(authenticate)):
         return await handle_openai(request, "embedding", team)
 
-    @app.get("/v1/ide/workflows/{workflow_id}/next-task")
-    async def next_ide_task(workflow_id: int, request: Request, _: str = Depends(authenticate)):
-        try:
-            task = await request.app.state.workflow_repository.next_ide_task(workflow_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if task:
-            if task["model"] not in request.app.state.config.routes:
-                task["model"] = next(
-                    (
-                        alias
-                        for alias, route in request.app.state.config.routes.items()
-                        if all(not candidate.model.startswith("text-embedding") for candidate in route.candidates)
-                    ),
-                    None,
-                )
-            task["completion_url"] = (
-                f"/v1/ide/workflows/{workflow_id}/tasks/{task['task_id']}/complete"
-            )
-        return {"task": task}
-
-    @app.post("/v1/ide/workflows/{workflow_id}/tasks/{task_id}/complete")
-    async def complete_ide_task(
-        workflow_id: int,
-        task_id: int,
-        payload: IdeTaskCompletion,
-        request: Request,
-        _: str = Depends(authenticate),
-    ):
-        try:
-            return await request.app.state.workflow_repository.complete_ide_task(
-                workflow_id, task_id, payload.result
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
     @app.post("/v1beta/models/{model}:generateContent")
     @app.post("/v1/models/{model}:generateContent")
-    async def generate_content(model: str, payload: GeminiRequest, request: Request, team: str = Depends(authenticate)):
+    async def generate_content(
+        model: str, payload: GeminiRequest, request: Request, team: str = Depends(authenticate)
+    ):
         result = await request.app.state.router.route(gemini_request(model, payload), team)
         return to_gemini(result.response)
 
     @app.post("/v1beta/models/{model}:streamGenerateContent")
     @app.post("/v1/models/{model}:streamGenerateContent")
     async def stream_generate_content(
-        model: str, payload: GeminiRequest, request: Request, alt: str | None = None, team: str = Depends(authenticate)
+        model: str,
+        payload: GeminiRequest,
+        request: Request,
+        alt: str | None = None,
+        team: str = Depends(authenticate),
     ):
         normalized = gemini_request(model, payload).model_copy(update={"stream": True})
         result = await request.app.state.router.route_stream(normalized, team)
         headers = {"X-CodeFlux-Provider": result.provider}
         if alt == "sse":
+
             async def events():
                 async for chunk in result.chunks:
                     yield f"data: {json.dumps(gemini_chunk(chunk))}\r\n\r\n"
