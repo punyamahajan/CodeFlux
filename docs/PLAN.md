@@ -358,6 +358,9 @@ Run the stages in order. A stage starts only when the previous gate has passed.
 4. Generate the initial migration; add the Postgres service and the alembic step to CI.
 5. Make tests use Postgres with per-test rollback fixtures.
 
+Neon: use the direct (non-pooled) connection string. Create the engine with pool_pre_ping=True, because Neon pauses idle databases and drops old connections.
+Alembic reads DATABASE_URL from settings, never from alembic.ini.
+
 **Gate:** alembic upgrade head, downgrade base and upgrade head all succeed on an empty database; the test suite runs on Postgres in CI.
 
 ### Stage 2: Security primitives and auth

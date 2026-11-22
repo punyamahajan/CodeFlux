@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime
-from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import (
@@ -67,17 +66,16 @@ class ClientApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+from codeflux.db.session import normalize_database_url
+
+
 class Database:
     def __init__(self, url: str):
-        self.engine = create_async_engine(url)
+        self.url = normalize_database_url(url)
+        self.engine = create_async_engine(self.url, pool_pre_ping=True)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
     async def initialize(self) -> None:
-        if self.engine.url.get_backend_name() == "sqlite" and self.engine.url.database not in {
-            None,
-            ":memory:",
-        }:
-            Path(self.engine.url.database).parent.mkdir(parents=True, exist_ok=True)
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
 

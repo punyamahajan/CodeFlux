@@ -1,7 +1,7 @@
 import pytest
 
 from codeflux.gateway.keypool import KeyPool
-from codeflux.storage import ClientKeyRepository, Database
+from codeflux.storage import ClientKeyRepository
 
 
 class Vault:
@@ -53,19 +53,14 @@ async def test_corrupt_key_skipped_for_healthy_key():
 
 
 @pytest.mark.asyncio
-async def test_managed_client_keys_are_hashed_and_authenticate():
-    database = Database("sqlite+aiosqlite:///:memory:")
-    await database.initialize()
-    repository = ClientKeyRepository(database.sessions, "test-master-secret")
+async def test_managed_client_keys_are_hashed_and_authenticate(session_factory):
+    repository = ClientKeyRepository(session_factory, "test-master-secret")
     raw = await repository.create("Alice", "engineering", 100_000)
     identity = await repository.authenticate(raw)
     assert raw.startswith("cf_")
-    assert identity == {
-        "id": 1,
-        "name": "Alice",
-        "team": "engineering",
-        "monthly_token_limit": 100_000,
-    }
+    assert identity is not None
+    assert identity["name"] == "Alice"
+    assert identity["team"] == "engineering"
+    assert identity["monthly_token_limit"] == 100_000
     assert await repository.authenticate("cf_wrong") is None
     assert raw not in str(await repository.list())
-    await database.close()

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,8 +55,23 @@ class Settings(BaseSettings):
 
     master_secret: str = "development-only-change-me"
     config_path: Path = Path("config/routes.yaml")
-    database_url: str = "sqlite+aiosqlite:///./data/codeflux.db"
+    database_url: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/omnikey",
+        validation_alias=AliasChoices("DATABASE_URL", "CODEFLUX_DATABASE_URL"),
+    )
     gateway_keys: str = "demo-key:demo"
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def normalize_db_url(cls, v: str) -> str:
+        if v.startswith("postgresql://"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if "sslmode=require" in v:
+            v = v.replace("sslmode=require", "ssl=require")
+        return v
+
     credentials_json: str = "{}"
     log_level: str = "INFO"
     host: str = "0.0.0.0"

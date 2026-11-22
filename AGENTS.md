@@ -44,6 +44,8 @@ OmniKey (package `codeflux`) is a unified AI gateway: admins pool provider keys 
 - main deploys to Render only after CI passes.
 
 ## Gotchas
+- Neon: use the direct (non-pooled) connection string. Create the engine with pool_pre_ping=True, because Neon pauses idle databases and drops old connections.
+- Alembic reads DATABASE_URL from settings, never from alembic.ini.
 - Neon URLs: convert `postgresql://` to `postgresql+asyncpg://` and replace `sslmode=require` with `ssl=require`, which asyncpg expects.
 - Run one uvicorn worker. In-memory state resets on restart and must never corrupt data.
 - Render's free filesystem is ephemeral: write no files at runtime.

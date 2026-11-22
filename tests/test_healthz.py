@@ -16,7 +16,6 @@ def client(tmp_path):
     settings = Settings(
         _env_file=None,
         config_path=config_path,
-        database_url=f"sqlite+aiosqlite:///{tmp_path / 'gw.db'}",
         gateway_keys="secret-key:admin",
     )
     with TestClient(create_app(settings)) as test_client:
