@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
+
+# Ensure test suite runs with ENV=test by default so throwaway secrets are generated.
+os.environ.setdefault("ENV", "test")
+os.environ.setdefault("CODEFLUX_ENV", "test")
+os.environ.setdefault("MASTER_KEY", "test-master-key-32-bytes-long!!")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-with-at-least-32-bytes-length!")
+os.environ.setdefault("KEY_HMAC_SECRET", "test-key-hmac-secret-with-32-bytes-length!")
 
 import pytest
 from sqlalchemy.ext.asyncio import (

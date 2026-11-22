@@ -50,16 +50,106 @@ class AppConfig(BaseModel):
         return self
 
 
+_THROWAWAY_MASTER_KEY: str | None = None
+_THROWAWAY_JWT_SECRET: str | None = None
+_THROWAWAY_KEY_HMAC_SECRET: str | None = None
+
+
+def _get_throwaway_master_key() -> str:
+    global _THROWAWAY_MASTER_KEY
+    if not _THROWAWAY_MASTER_KEY:
+        from cryptography.fernet import Fernet
+
+        _THROWAWAY_MASTER_KEY = Fernet.generate_key().decode()
+    return _THROWAWAY_MASTER_KEY
+
+
+def _get_throwaway_jwt_secret() -> str:
+    global _THROWAWAY_JWT_SECRET
+    if not _THROWAWAY_JWT_SECRET:
+        import secrets
+
+        _THROWAWAY_JWT_SECRET = secrets.token_urlsafe(32)
+    return _THROWAWAY_JWT_SECRET
+
+
+def _get_throwaway_key_hmac_secret() -> str:
+    global _THROWAWAY_KEY_HMAC_SECRET
+    if not _THROWAWAY_KEY_HMAC_SECRET:
+        import secrets
+
+        _THROWAWAY_KEY_HMAC_SECRET = secrets.token_hex(32)
+    return _THROWAWAY_KEY_HMAC_SECRET
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CODEFLUX_", env_file=".env", extra="ignore")
 
-    master_secret: str = "development-only-change-me"
+    env: str = Field(default="dev", validation_alias=AliasChoices("ENV", "CODEFLUX_ENV"))
+    demo_mode: bool = Field(
+        default=False, validation_alias=AliasChoices("DEMO_MODE", "CODEFLUX_DEMO_MODE")
+    )
+    master_key: str = Field(
+        default="", validation_alias=AliasChoices("MASTER_KEY", "CODEFLUX_MASTER_KEY")
+    )
+    jwt_secret: str = Field(
+        default="", validation_alias=AliasChoices("JWT_SECRET", "CODEFLUX_JWT_SECRET")
+    )
+    key_hmac_secret: str = Field(
+        default="", validation_alias=AliasChoices("KEY_HMAC_SECRET", "CODEFLUX_KEY_HMAC_SECRET")
+    )
+    cors_origins: str = Field(
+        default="*", validation_alias=AliasChoices("CORS_ORIGINS", "CODEFLUX_CORS_ORIGINS")
+    )
+    master_secret: str = Field(
+        default="", validation_alias=AliasChoices("MASTER_SECRET", "CODEFLUX_MASTER_SECRET")
+    )
     config_path: Path = Path("config/routes.yaml")
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/omnikey",
         validation_alias=AliasChoices("DATABASE_URL", "CODEFLUX_DATABASE_URL"),
     )
     gateway_keys: str = "demo-key:demo"
+
+    @model_validator(mode="after")
+    def validate_secrets(self) -> Settings:
+        is_test_env = self.env.strip().lower() in ("test", "testing")
+        known_defaults = {
+            "",
+            "change-me",
+            "development-only-change-me",
+            "default",
+            "secret",
+            "password",
+            "test",
+            "jwt-secret",
+            "master-key",
+            "key-hmac-secret",
+            "your-secret-here",
+        }
+
+        if is_test_env:
+            if not self.master_key or self.master_key.strip().lower() in known_defaults:
+                self.master_key = _get_throwaway_master_key()
+            if not self.jwt_secret or self.jwt_secret.strip().lower() in known_defaults:
+                self.jwt_secret = _get_throwaway_jwt_secret()
+            if not self.key_hmac_secret or self.key_hmac_secret.strip().lower() in known_defaults:
+                self.key_hmac_secret = _get_throwaway_key_hmac_secret()
+        else:
+            secrets_to_check = {
+                "MASTER_KEY": self.master_key,
+                "JWT_SECRET": self.jwt_secret,
+                "KEY_HMAC_SECRET": self.key_hmac_secret,
+            }
+            for name, val in secrets_to_check.items():
+                if not val or val.strip().lower() in known_defaults:
+                    raise ValueError(
+                        f"Secret '{name}' must be set and cannot use a known default outside ENV=test"
+                    )
+
+        self.master_secret = self.master_key
+
+        return self
 
     @field_validator("database_url", mode="after")
     @classmethod

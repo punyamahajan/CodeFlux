@@ -103,7 +103,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return error_response(403, str(exc), "permission_denied")
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_error(_: Request, exc: StarletteHTTPException):
+    async def http_error(request: Request, exc: StarletteHTTPException):
+        if request.url.path.startswith("/api"):
+            if isinstance(exc.detail, dict):
+                code = exc.detail.get("code", "error")
+                message = exc.detail.get("message", str(exc.detail))
+            else:
+                code = "error" if exc.status_code >= 500 else "client_error"
+                message = str(exc.detail)
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": {"code": code, "message": message}},
+                headers=exc.headers,
+            )
         error_type = {401: "invalid_api_key", 429: "insufficient_quota"}.get(
             exc.status_code, "invalid_request_error"
         )
