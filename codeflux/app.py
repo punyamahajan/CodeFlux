@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from codeflux.api import (
     admin_requests_router,
     admin_usage_router,
+    arena_router,
     auth_router,
     demo_router,
     explain_router,
@@ -23,6 +24,7 @@ from codeflux.api import (
     member_requests_router,
     member_sessions_router,
     member_usage_router,
+    playground_router,
     routes_router,
     vault_router,
 )
@@ -135,6 +137,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_usage_router)
     app.include_router(member_usage_router)
     app.include_router(explain_router)
+    app.include_router(playground_router)
+    app.include_router(arena_router)
 
     def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
         # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
