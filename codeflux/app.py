@@ -18,6 +18,7 @@ from codeflux.api import (
     admin_usage_router,
     auth_router,
     demo_router,
+    explain_router,
     keys_router,
     member_requests_router,
     member_sessions_router,
@@ -133,6 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_requests_router)
     app.include_router(admin_usage_router)
     app.include_router(member_usage_router)
+    app.include_router(explain_router)
 
     def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
         # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
@@ -395,7 +397,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 media_type="text/event-stream",
                 headers={
                     "X-CodeFlux-Provider": result.provider,
-                    "X-OmniKey-Attempts": ",".join(result.attempts),
+                    "X-OmniKey-Provider": result.provider or "",
+                    "X-OmniKey-Model": normalized.model or "",
+                    "X-OmniKey-Attempts": str(len(result.attempts)),
                 },
             )
 
@@ -417,6 +421,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             and session_meta.last_provider != result.provider
         )
         assistant_content = result.response.content
+
+        # Generate trace id here so we can include it in the X-OmniKey-Trace-Id header.
+        import uuid as _uuid
+
+        trace_id = f"trc_{_uuid.uuid4().hex[:28]}"
 
         if session_factory:
             if session_id and session_meta:
@@ -458,10 +467,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latency_ms=elapsed_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                trace_id=trace_id,
                 facts=trace_facts,
             )
 
-        return response
+        platform_key_state = getattr(request.state, "platform_key", None)
+        credits_remaining = (
+            str(platform_key_state.credit_remaining_micro) if platform_key_state else ""
+        )
+        omnikey_headers = {
+            "X-OmniKey-Trace-Id": trace_id,
+            "X-OmniKey-Provider": result.provider or "",
+            "X-OmniKey-Model": normalized.model or "",
+            "X-OmniKey-Attempts": str(len(result.attempts)),
+            "X-OmniKey-Latency-Ms": str(elapsed_ms),
+            "X-OmniKey-Credits-Remaining": credits_remaining,
+        }
+        return JSONResponse(content=response, headers=omnikey_headers)
 
     @app.post("/v1/chat/completions")
     async def chat(
@@ -592,7 +614,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 facts=trace_facts,
             )
 
-        return gemini_resp
+        platform_key_state = getattr(request.state, "platform_key", None)
+        credits_remaining = (
+            str(platform_key_state.credit_remaining_micro) if platform_key_state else ""
+        )
+        gemini_headers = {
+            "X-OmniKey-Provider": result.provider or "",
+            "X-OmniKey-Model": model or "",
+            "X-OmniKey-Attempts": str(len(result.attempts)),
+            "X-OmniKey-Latency-Ms": str(elapsed_ms),
+            "X-OmniKey-Credits-Remaining": credits_remaining,
+        }
+        return JSONResponse(content=gemini_resp, headers=gemini_headers)
 
     @app.post("/v1beta/models/{model}:streamGenerateContent")
     @app.post("/v1/models/{model}:streamGenerateContent")
