@@ -8,10 +8,60 @@ provider_base_urls:
 
 # Any model name that is not a route alias or a candidate model below
 # (for example "gpt-4" or "gemini-pro") is served by these routes.
-default_route: gemini-tier
+default_route: smart
 default_embedding_route: embeddings
 
 routes:
+  fast:
+    strategy: least-latency
+    total_timeout_seconds: 60
+    candidates:
+      - provider: groq
+        model: llama-3.3-70b-versatile
+        api_key_ref: groq-primary
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-2.0-flash
+        api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
+        timeout_seconds: 15
+
+  smart:
+    strategy: priority
+    total_timeout_seconds: 120
+    candidates:
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-2.0-flash
+        api_key_ref: gemini-primary
+        timeout_seconds: 15
+      - provider: groq
+        model: llama-3.3-70b-versatile
+        api_key_ref: groq-primary
+        timeout_seconds: 15
+
+  code:
+    strategy: priority
+    total_timeout_seconds: 180
+    candidates:
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
+        timeout_seconds: 15
+      - provider: groq
+        model: qwen/qwen3.8-27b
+        api_key_ref: groq-primary
+        timeout_seconds: 15
+      - provider: ollama
+        model: qwen2.5-coder
+        timeout_seconds: 30
+
   groq-tier:
     strategy: priority
     total_timeout_seconds: 60
@@ -24,7 +74,6 @@ routes:
   gpt-4-tier:
     strategy: priority
     total_timeout_seconds: 420
-    pii_redaction: false
     candidates:
       - provider: openai
         model: gpt-4o-mini
@@ -34,44 +83,19 @@ routes:
         model: llama-3.3-70b-versatile
         api_key_ref: groq-primary
         timeout_seconds: 15
-      - provider: gemini
-        model: gemini-3.1-flash-lite
-        api_key_ref: gemini-primary
-        timeout_seconds: 15
-      - provider: gemini
-        model: gemini-flash-latest
-        api_key_ref: gemini-primary
-        timeout_seconds: 15
-    # Coding model: llama3.2 (3B) could not produce working multi-file apps.
-    ollama_fallback_model: qwen2.5-coder
-    ollama_fallback_timeout_seconds: 360
 
   gemini-tier:
     strategy: priority
     total_timeout_seconds: 420
     candidates:
       - provider: gemini
-        model: gemini-3.1-flash-lite
+        model: gemini-2.0-flash
         api_key_ref: gemini-primary
         timeout_seconds: 15
       - provider: groq
         model: llama-3.3-70b-versatile
         api_key_ref: groq-primary
         timeout_seconds: 15
-      - provider: gemini
-        model: gemini-flash-latest
-        api_key_ref: gemini-primary
-        timeout_seconds: 15
-      - provider: openai
-        model: gpt-4o-mini
-        api_key_ref: openai-primary
-        timeout_seconds: 15
-      - provider: openrouter
-        model: google/gemini-2.0-flash-001
-        api_key_ref: openrouter-primary
-    # Coding model: llama3.2 (3B) could not produce working multi-file apps.
-    ollama_fallback_model: qwen2.5-coder
-    ollama_fallback_timeout_seconds: 360
 
   embeddings:
     strategy: round-robin
