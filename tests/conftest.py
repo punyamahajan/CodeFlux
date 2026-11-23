@@ -10,6 +10,19 @@ os.environ.setdefault("MASTER_KEY", "test-master-key-32-bytes-long!!")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-with-at-least-32-bytes-length!")
 os.environ.setdefault("KEY_HMAC_SECRET", "test-key-hmac-secret-with-32-bytes-length!")
 
+if (
+    "DATABASE_URL" not in os.environ
+    and "CODEFLUX_DATABASE_URL" not in os.environ
+    and os.path.exists(".env")
+):
+    with open(".env") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("DATABASE_URL="):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                os.environ["DATABASE_URL"] = val
+                break
+
 import pytest
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,

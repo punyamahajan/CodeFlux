@@ -13,6 +13,7 @@ class KeyState:
     last_used: float = 0.0
     remaining_requests: int | None = None
     reset_at: float = 0.0
+    disabled: bool = False
 
 
 class KeyPool:
@@ -38,7 +39,11 @@ class KeyPool:
         now = time.monotonic()
         async with self._lock:
             states = [self._states.setdefault(ref, KeyState(ref)) for ref in references]
-            eligible = [s for s in states if s.remaining_requests != 0 or s.reset_at <= now]
+            eligible = [
+                s
+                for s in states
+                if not s.disabled and (s.remaining_requests != 0 or s.reset_at <= now)
+            ]
             while eligible:
                 state = min(eligible, key=lambda item: item.last_used)
                 eligible.remove(state)
@@ -48,10 +53,11 @@ class KeyPool:
                     return state.reference, key
         return None, None
 
-    def snapshot(self) -> list[dict[str, int | float | str | None]]:
+    def snapshot(self) -> list[dict[str, int | float | str | bool | None]]:
         return [
             {
                 "reference": state.reference,
+                "disabled": state.disabled,
                 "remaining_requests": state.remaining_requests,
                 "reset_in_seconds": max(0.0, state.reset_at - time.monotonic())
                 if state.reset_at
@@ -59,6 +65,23 @@ class KeyPool:
             }
             for state in self._states.values()
         ]
+
+    async def set_cooldown(self, reference: str | None, retry_after_seconds: float = 30.0) -> None:
+        """Set a cooldown timer on a key after receiving a 429."""
+        if not reference:
+            return
+        async with self._lock:
+            state = self._states.setdefault(reference, KeyState(reference))
+            state.reset_at = time.monotonic() + max(1.0, retry_after_seconds)
+            state.remaining_requests = 0
+
+    async def disable(self, reference: str | None) -> None:
+        """Disable a key after receiving a 401."""
+        if not reference:
+            return
+        async with self._lock:
+            state = self._states.setdefault(reference, KeyState(reference))
+            state.disabled = True
 
     async def update_limits(self, reference: str | None, headers: dict[str, str]) -> None:
         if not reference:

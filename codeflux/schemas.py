@@ -63,6 +63,7 @@ class StreamChunk(BaseModel):
     tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
     usage: Usage | None = None
+    is_error: bool = False
 
 
 class HealthState(str, Enum):

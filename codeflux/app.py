@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
@@ -15,13 +17,14 @@ from codeflux.api import (
     admin_requests_router,
     admin_usage_router,
     auth_router,
+    demo_router,
     keys_router,
     member_requests_router,
     member_usage_router,
     routes_router,
     vault_router,
 )
-from codeflux.errors import NoProviderAvailable
+from codeflux.errors import NoProviderAvailable, ProviderError
 from codeflux.gateway.auth import authenticate
 from codeflux.gateway.circuit import CircuitBreaker
 from codeflux.gateway.keypool import KeyPool
@@ -46,6 +49,8 @@ from codeflux.storage import (
     Database,
     UsageRepository,
 )
+
+logger = logging.getLogger("codeflux.app")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -89,14 +94,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             database.sessions, settings.master_secret
         )
         app.state.usage_repository = UsageRepository(database.sessions)
+        app.state.demo_outages = set()
+        app.state.settings = settings
         app.state.router = RoutingEngine(
             config, registry, KeyPool(vault), breaker, app.state.usage_repository, PIIRedactor()
         )
+        app.state.router.demo_outages = app.state.demo_outages
         yield
         await client.aclose()
         await database.close()
 
     app = FastAPI(title="CodeFlux", version="0.1.0", lifespan=lifespan)
+    app.state.settings = settings
     app.state.session_factory = None
     app.state.rpm_limiter = SlidingWindowRpmLimiter()
     cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
@@ -112,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(vault_router)
     app.include_router(keys_router)
     app.include_router(routes_router)
+    app.include_router(demo_router)
     app.include_router(member_requests_router)
     app.include_router(admin_requests_router)
     app.include_router(admin_usage_router)
@@ -130,6 +140,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(NoProviderAvailable)
     async def no_provider(_: Request, exc: NoProviderAvailable):
         return error_response(503, str(exc), "provider_unavailable")
+
+    @app.exception_handler(ProviderError)
+    async def provider_error(_: Request, exc: ProviderError):
+        return error_response(
+            exc.status_code,
+            str(exc),
+            "invalid_request_error" if exc.status_code in (400, 422) else "provider_error",
+        )
 
     @app.exception_handler(PermissionError)
     async def forbidden(_: Request, exc: PermissionError):
@@ -235,36 +253,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             normalized = openai_request(payload, operation)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        task_tag = request.headers.get("x-omnikey-task")
+        custom_fallback = request.headers.get("x-omnikey-fallback")
+        platform_key = getattr(request.state, "platform_key", None)
+        allowed_routes = platform_key.allowed_routes if platform_key else None
+        router = request.app.state.router
+        kwargs: dict[str, Any] = {}
+        if task_tag is not None:
+            kwargs["task_tag"] = task_tag
+        if custom_fallback is not None:
+            kwargs["custom_fallback"] = custom_fallback
+        if allowed_routes is not None:
+            kwargs["allowed_routes"] = allowed_routes
+
         if normalized.stream:
-            result = await request.app.state.router.route_stream(normalized, team)
+            try:
+                result = await router.route_stream(
+                    normalized,
+                    team,
+                    **kwargs,
+                )
+            except TypeError:
+                result = await router.route_stream(normalized, team)
             created = int(time.time())
 
             async def events():
                 stream_prompt_tokens = 0
                 stream_completion_tokens = 0
                 full_chars = 0
-                async for chunk in result.chunks:
-                    if chunk.usage and chunk.usage.total_tokens > 0:
-                        stream_prompt_tokens = chunk.usage.prompt_tokens
-                        stream_completion_tokens = chunk.usage.completion_tokens
-                    if chunk.content:
-                        full_chars += len(chunk.content)
-                    delta = {}
-                    if chunk.content is not None:
-                        delta["content"] = chunk.content
-                    if chunk.tool_calls:
-                        delta["tool_calls"] = chunk.tool_calls
-                    data = {
-                        "id": chunk.id,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": normalized.model,
-                        "choices": [
-                            {"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}
-                        ],
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                yield "data: [DONE]\n\n"
+                try:
+                    async for chunk in result.chunks:
+                        if getattr(chunk, "is_error", False) or chunk.finish_reason == "error":
+                            yield 'data: {"error": {"message": "Stream interrupted", "type": "stream_error", "code": 500}}\n\n'
+                            return
+                        if chunk.usage and chunk.usage.total_tokens > 0:
+                            stream_prompt_tokens = chunk.usage.prompt_tokens
+                            stream_completion_tokens = chunk.usage.completion_tokens
+                        if chunk.content:
+                            full_chars += len(chunk.content)
+                        delta = {}
+                        if chunk.content is not None:
+                            delta["content"] = chunk.content
+                        if chunk.tool_calls:
+                            delta["tool_calls"] = chunk.tool_calls
+                        data = {
+                            "id": chunk.id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": normalized.model,
+                            "choices": [
+                                {"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}
+                            ],
+                        }
+                        yield f"data: {json.dumps(data)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Stream interrupted: %s", exc)
+                    yield 'data: {"error": {"message": "Stream interrupted", "type": "stream_error", "code": 500}}\n\n'
+                    return
 
                 # Record usage in database
                 if stream_prompt_tokens == 0 and stream_completion_tokens == 0 and full_chars > 0:
@@ -286,15 +333,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         latency_ms=elapsed_ms,
                         prompt_tokens=stream_prompt_tokens,
                         completion_tokens=stream_completion_tokens,
+                        facts={"attempts": getattr(result, "attempt_records", None) or []},
                     )
 
             return StreamingResponse(
                 events(),
                 media_type="text/event-stream",
-                headers={"X-CodeFlux-Provider": result.provider},
+                headers={
+                    "X-CodeFlux-Provider": result.provider,
+                    "X-OmniKey-Attempts": ",".join(result.attempts),
+                },
             )
 
-        result = await request.app.state.router.route(normalized, team)
+        try:
+            result = await router.route(
+                normalized,
+                team,
+                **kwargs,
+            )
+        except TypeError:
+            result = await router.route(normalized, team)
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         response = to_openai(result.response, operation, normalized.model)
         response["codeflux"] = {"provider": result.provider, "attempts": result.attempts}
@@ -319,6 +377,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latency_ms=elapsed_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                facts={"attempts": getattr(result, "attempt_records", None) or []},
             )
 
         return response
@@ -357,7 +416,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         team: str = Depends(authenticate),
     ):
         start_time = time.monotonic()
-        result = await request.app.state.router.route(gemini_request(model, payload), team)
+        task_tag = request.headers.get("x-omnikey-task")
+        custom_fallback = request.headers.get("x-omnikey-fallback")
+        platform_key = getattr(request.state, "platform_key", None)
+        allowed_routes = platform_key.allowed_routes if platform_key else None
+        router = request.app.state.router
+        kwargs: dict[str, Any] = {}
+        if task_tag is not None:
+            kwargs["task_tag"] = task_tag
+        if custom_fallback is not None:
+            kwargs["custom_fallback"] = custom_fallback
+        if allowed_routes is not None:
+            kwargs["allowed_routes"] = allowed_routes
+
+        try:
+            result = await router.route(
+                gemini_request(model, payload),
+                team,
+                **kwargs,
+            )
+        except TypeError:
+            result = await router.route(gemini_request(model, payload), team)
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         gemini_resp = to_gemini(result.response)
 
@@ -381,6 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latency_ms=elapsed_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                facts={"attempts": getattr(result, "attempt_records", None) or []},
             )
 
         return gemini_resp
@@ -394,8 +474,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         alt: str | None = None,
         team: str = Depends(authenticate),
     ):
+        task_tag = request.headers.get("x-omnikey-task")
+        custom_fallback = request.headers.get("x-omnikey-fallback")
+        platform_key = getattr(request.state, "platform_key", None)
+        allowed_routes = platform_key.allowed_routes if platform_key else None
+        router = request.app.state.router
+        kwargs: dict[str, Any] = {}
+        if task_tag is not None:
+            kwargs["task_tag"] = task_tag
+        if custom_fallback is not None:
+            kwargs["custom_fallback"] = custom_fallback
+        if allowed_routes is not None:
+            kwargs["allowed_routes"] = allowed_routes
+
         normalized = gemini_request(model, payload).model_copy(update={"stream": True})
-        result = await request.app.state.router.route_stream(normalized, team)
+        try:
+            result = await router.route_stream(
+                normalized,
+                team,
+                **kwargs,
+            )
+        except TypeError:
+            result = await router.route_stream(normalized, team)
         headers = {"X-CodeFlux-Provider": result.provider}
         if alt == "sse":
 

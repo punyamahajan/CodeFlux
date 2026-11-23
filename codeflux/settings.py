@@ -23,6 +23,7 @@ class RouteConfig(BaseModel):
     total_timeout_seconds: float = 60.0
     pii_redaction: bool = False
     allowed_teams: list[str] = Field(default_factory=list)
+    task_tag: str | None = None
     ollama_fallback_model: str | None = None
     ollama_fallback_timeout_seconds: float = 120.0
 
