@@ -222,3 +222,58 @@ class LimitRequestResponse(BaseModel):
 
 class LimitRequestApproveRequest(BaseModel):
     approved_credit_micro: int | None = Field(default=None, gt=0)
+
+
+# ============================================================================
+# Usage Schemas
+# ============================================================================
+
+
+class KeyUsageSummary(BaseModel):
+    key_id: str
+    key_name: str
+    key_prefix: str
+    credit_limit_micro: int
+    credit_remaining_micro: int
+    total_requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    total_cost_micro: int
+    cost_per_1k_tokens_micro: int
+
+
+class ModelUsageSummary(BaseModel):
+    model: str
+    total_requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    total_cost_micro: int
+    cost_per_1k_tokens_micro: int
+
+
+class LedgerEntryResponse(BaseModel):
+    id: str
+    key_id: str
+    amount_micro: int
+    balance_after_micro: int
+    reason: str
+    trace_id: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UsageOverviewResponse(BaseModel):
+    total_requests: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    total_cost_micro: int
+    total_credits_remaining_micro: int
+    cost_per_1k_tokens_micro: int
+    by_key: list[KeyUsageSummary]
+    by_model: list[ModelUsageSummary]
+    ledger: list[LedgerEntryResponse]
+    next_cursor: str | None = None

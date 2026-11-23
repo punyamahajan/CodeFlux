@@ -15,6 +15,7 @@ from codeflux.db.models import (
     Organization,
     PlatformKey,
     ProviderCredential,
+    RequestTrace,
     Route,
     User,
 )
@@ -812,3 +813,160 @@ class LimitRequestService:
         req.reviewed_at = datetime.now(UTC)
         await session.flush()
         return req
+
+
+# ============================================================================
+# Usage Service
+# ============================================================================
+
+
+class UsageService:
+    @classmethod
+    async def get_usage_overview(
+        cls,
+        session: AsyncSession,
+        org_id: str,
+        user_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate totals by key and model, calculate cost per 1K tokens, and list ledger entries.
+
+        If user_id is provided, filters to keys owned by that member.
+        """
+        # 1. Fetch keys (all in org for admin, member's own for member)
+        key_stmt = select(PlatformKey).where(PlatformKey.org_id == org_id)
+        if user_id:
+            key_stmt = key_stmt.where(PlatformKey.user_id == user_id)
+        key_res = await session.execute(key_stmt)
+        keys = list(key_res.scalars().all())
+        key_ids = [k.id for k in keys]
+
+        if not key_ids:
+            return {
+                "total_requests": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "total_cost_micro": 0,
+                "total_credits_remaining_micro": 0,
+                "cost_per_1k_tokens_micro": 0,
+                "by_key": [],
+                "by_model": [],
+                "ledger": [],
+                "next_cursor": None,
+            }
+
+        # 2. Fetch traces for these keys
+        trace_stmt = select(RequestTrace).where(
+            RequestTrace.org_id == org_id, RequestTrace.key_id.in_(key_ids)
+        )
+        trace_res = await session.execute(trace_stmt)
+        traces = list(trace_res.scalars().all())
+
+        # 3. Aggregate totals by key
+        key_traces: dict[str, list[RequestTrace]] = {k.id: [] for k in keys}
+        for trace in traces:
+            if trace.key_id in key_traces:
+                key_traces[trace.key_id].append(trace)
+
+        by_key = []
+        for k in keys:
+            kts = key_traces[k.id]
+            req_cnt = len(kts)
+            p_tok = sum(t.prompt_tokens for t in kts)
+            c_tok = sum(t.completion_tokens for t in kts)
+            tot_tok = p_tok + c_tok
+            cost_micro = sum(t.cost_micro for t in kts)
+            cost_per_1k = (cost_micro * 1000) // tot_tok if tot_tok > 0 else 0
+            by_key.append(
+                {
+                    "key_id": k.id,
+                    "key_name": k.name,
+                    "key_prefix": k.key_prefix,
+                    "credit_limit_micro": k.credit_limit_micro,
+                    "credit_remaining_micro": k.credit_remaining_micro,
+                    "total_requests": req_cnt,
+                    "prompt_tokens": p_tok,
+                    "completion_tokens": c_tok,
+                    "total_tokens": tot_tok,
+                    "total_cost_micro": cost_micro,
+                    "cost_per_1k_tokens_micro": cost_per_1k,
+                }
+            )
+
+        # 4. Aggregate totals by model
+        model_traces: dict[str, list[RequestTrace]] = {}
+        for trace in traces:
+            m = trace.model or "unknown"
+            model_traces.setdefault(m, []).append(trace)
+
+        by_model = []
+        for model_name, mts in sorted(model_traces.items()):
+            req_cnt = len(mts)
+            p_tok = sum(t.prompt_tokens for t in mts)
+            c_tok = sum(t.completion_tokens for t in mts)
+            tot_tok = p_tok + c_tok
+            cost_micro = sum(t.cost_micro for t in mts)
+            cost_per_1k = (cost_micro * 1000) // tot_tok if tot_tok > 0 else 0
+            by_model.append(
+                {
+                    "model": model_name,
+                    "total_requests": req_cnt,
+                    "prompt_tokens": p_tok,
+                    "completion_tokens": c_tok,
+                    "total_tokens": tot_tok,
+                    "total_cost_micro": cost_micro,
+                    "cost_per_1k_tokens_micro": cost_per_1k,
+                }
+            )
+
+        # 5. Overall summary
+        total_requests = len(traces)
+        total_prompt_tokens = sum(t.prompt_tokens for t in traces)
+        total_completion_tokens = sum(t.completion_tokens for t in traces)
+        total_tokens = total_prompt_tokens + total_completion_tokens
+        total_cost_micro = sum(t.cost_micro for t in traces)
+        total_credits_remaining_micro = sum(k.credit_remaining_micro for k in keys)
+        cost_per_1k_tokens_micro = (
+            (total_cost_micro * 1000) // total_tokens if total_tokens > 0 else 0
+        )
+
+        # 6. Fetch ledger rows with cursor pagination
+        ledger_stmt = select(CreditLedger).where(
+            CreditLedger.org_id == org_id, CreditLedger.key_id.in_(key_ids)
+        )
+        if cursor:
+            decoded = decode_cursor(cursor)
+            if decoded:
+                cursor_time, cursor_id = decoded
+                ledger_stmt = ledger_stmt.where(
+                    (CreditLedger.created_at < cursor_time)
+                    | ((CreditLedger.created_at == cursor_time) & (CreditLedger.id < cursor_id))
+                )
+
+        ledger_stmt = ledger_stmt.order_by(
+            CreditLedger.created_at.desc(), CreditLedger.id.desc()
+        ).limit(limit + 1)
+        ledger_res = await session.execute(ledger_stmt)
+        ledger_items = list(ledger_res.scalars().all())
+
+        next_cursor = None
+        if len(ledger_items) > limit:
+            last = ledger_items[limit - 1]
+            next_cursor = encode_cursor(last.created_at, last.id)
+            ledger_items = ledger_items[:limit]
+
+        return {
+            "total_requests": total_requests,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
+            "total_cost_micro": total_cost_micro,
+            "total_credits_remaining_micro": total_credits_remaining_micro,
+            "cost_per_1k_tokens_micro": cost_per_1k_tokens_micro,
+            "by_key": by_key,
+            "by_model": by_model,
+            "ledger": ledger_items,
+            "next_cursor": next_cursor,
+        }

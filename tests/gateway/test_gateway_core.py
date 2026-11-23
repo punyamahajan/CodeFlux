@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 from fastapi import FastAPI
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from codeflux.app import create_app
 from codeflux.db.models import Organization, PlatformKey, User
@@ -19,7 +19,11 @@ from codeflux.settings import Settings
 
 
 @pytest.fixture
-async def gateway_app(db_session: AsyncSession, tmp_path: Path) -> AsyncIterator[FastAPI]:
+async def gateway_app(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> AsyncIterator[FastAPI]:
     config_path = tmp_path / "routes.yaml"
     config_path.write_text(
         json.dumps(
@@ -57,6 +61,7 @@ async def gateway_app(db_session: AsyncSession, tmp_path: Path) -> AsyncIterator
         credentials_json=json.dumps(credentials),
     )
     app = create_app(settings)
+    app.state.session_factory = session_factory
 
     async def override_get_db_session():
         yield db_session

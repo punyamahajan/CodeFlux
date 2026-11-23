@@ -94,3 +94,7 @@ async def require_admin(
             detail={"code": "forbidden", "message": "Admin privileges required"},
         )
     return current_user
+
+
+# Alias for compatibility
+get_current_user = require_user

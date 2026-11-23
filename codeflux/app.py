@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -13,9 +13,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from codeflux.api import (
     admin_requests_router,
+    admin_usage_router,
     auth_router,
     keys_router,
     member_requests_router,
+    member_usage_router,
     routes_router,
     vault_router,
 )
@@ -34,6 +36,7 @@ from codeflux.gateway.pii import PIIRedactor
 from codeflux.gateway.ratelimit import SlidingWindowRpmLimiter
 from codeflux.gateway.router import RoutingEngine
 from codeflux.logging import configure_logging
+from codeflux.metering.service import record_usage_and_trace
 from codeflux.providers.registry import AdapterRegistry
 from codeflux.schemas import GeminiRequest
 from codeflux.settings import Settings, load_config
@@ -76,6 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         app.state.config = config
         app.state.database = database
+        app.state.session_factory = database.sessions
         app.state.client = client
         app.state.registry = registry
         app.state.breaker = breaker
@@ -93,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await database.close()
 
     app = FastAPI(title="CodeFlux", version="0.1.0", lifespan=lifespan)
+    app.state.session_factory = None
     app.state.rpm_limiter = SlidingWindowRpmLimiter()
     cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
     app.add_middleware(
@@ -109,6 +114,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_router)
     app.include_router(member_requests_router)
     app.include_router(admin_requests_router)
+    app.include_router(admin_usage_router)
+    app.include_router(member_usage_router)
 
     def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
         # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
@@ -219,7 +226,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def usage(request: Request, team: str = Depends(authenticate)):
         return await request.app.state.usage_repository.summary(team)
 
-    async def handle_openai(request: Request, operation: str, team: str):
+    async def handle_openai(
+        request: Request, operation: str, team: str, background_tasks: BackgroundTasks
+    ):
+        start_time = time.monotonic()
         try:
             payload = await request.json()
             normalized = openai_request(payload, operation)
@@ -230,7 +240,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             created = int(time.time())
 
             async def events():
+                stream_prompt_tokens = 0
+                stream_completion_tokens = 0
+                full_chars = 0
                 async for chunk in result.chunks:
+                    if chunk.usage and chunk.usage.total_tokens > 0:
+                        stream_prompt_tokens = chunk.usage.prompt_tokens
+                        stream_completion_tokens = chunk.usage.completion_tokens
+                    if chunk.content:
+                        full_chars += len(chunk.content)
                     delta = {}
                     if chunk.content is not None:
                         delta["content"] = chunk.content
@@ -248,35 +266,124 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
 
+                # Record usage in database
+                if stream_prompt_tokens == 0 and stream_completion_tokens == 0 and full_chars > 0:
+                    stream_completion_tokens = max(1, full_chars // 4)
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+                    getattr(request.app.state, "database", None), "sessions", None
+                )
+                if session_factory:
+                    org_id = getattr(request.state, "org_id", None) or "org_default"
+                    key_id = getattr(request.state, "key_id", None)
+                    await record_usage_and_trace(
+                        session_factory,
+                        org_id=org_id,
+                        key_id=key_id,
+                        provider=result.provider,
+                        model=normalized.model,
+                        status_code=200,
+                        latency_ms=elapsed_ms,
+                        prompt_tokens=stream_prompt_tokens,
+                        completion_tokens=stream_completion_tokens,
+                    )
+
             return StreamingResponse(
                 events(),
                 media_type="text/event-stream",
                 headers={"X-CodeFlux-Provider": result.provider},
             )
+
         result = await request.app.state.router.route(normalized, team)
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
         response = to_openai(result.response, operation, normalized.model)
         response["codeflux"] = {"provider": result.provider, "attempts": result.attempts}
+
+        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+            getattr(request.app.state, "database", None), "sessions", None
+        )
+        if session_factory:
+            usage = result.response.usage
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+            org_id = getattr(request.state, "org_id", None) or "org_default"
+            key_id = getattr(request.state, "key_id", None)
+            background_tasks.add_task(
+                record_usage_and_trace,
+                session_factory,
+                org_id=org_id,
+                key_id=key_id,
+                provider=result.provider,
+                model=normalized.model,
+                status_code=200,
+                latency_ms=elapsed_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+
         return response
 
     @app.post("/v1/chat/completions")
-    async def chat(request: Request, team: str = Depends(authenticate)):
-        return await handle_openai(request, "chat", team)
+    async def chat(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        team: str = Depends(authenticate),
+    ):
+        return await handle_openai(request, "chat", team, background_tasks)
 
     @app.post("/v1/completions")
-    async def completions(request: Request, team: str = Depends(authenticate)):
-        return await handle_openai(request, "completion", team)
+    async def completions(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        team: str = Depends(authenticate),
+    ):
+        return await handle_openai(request, "completion", team, background_tasks)
 
     @app.post("/v1/embeddings")
-    async def embeddings(request: Request, team: str = Depends(authenticate)):
-        return await handle_openai(request, "embedding", team)
+    async def embeddings(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        team: str = Depends(authenticate),
+    ):
+        return await handle_openai(request, "embedding", team, background_tasks)
 
     @app.post("/v1beta/models/{model}:generateContent")
     @app.post("/v1/models/{model}:generateContent")
     async def generate_content(
-        model: str, payload: GeminiRequest, request: Request, team: str = Depends(authenticate)
+        model: str,
+        payload: GeminiRequest,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        team: str = Depends(authenticate),
     ):
+        start_time = time.monotonic()
         result = await request.app.state.router.route(gemini_request(model, payload), team)
-        return to_gemini(result.response)
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        gemini_resp = to_gemini(result.response)
+
+        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+            getattr(request.app.state, "database", None), "sessions", None
+        )
+        if session_factory:
+            usage = result.response.usage
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+            org_id = getattr(request.state, "org_id", None) or "org_default"
+            key_id = getattr(request.state, "key_id", None)
+            background_tasks.add_task(
+                record_usage_and_trace,
+                session_factory,
+                org_id=org_id,
+                key_id=key_id,
+                provider=result.provider,
+                model=model,
+                status_code=200,
+                latency_ms=elapsed_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+
+        return gemini_resp
 
     @app.post("/v1beta/models/{model}:streamGenerateContent")
     @app.post("/v1/models/{model}:streamGenerateContent")
