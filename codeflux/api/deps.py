@@ -14,16 +14,19 @@ from codeflux.settings import Settings
 
 
 def get_token_from_request(request: Request) -> str | None:
-    """Extract access token from httpOnly cookie or Authorization Bearer header."""
-    cookie_token = request.cookies.get(COOKIE_NAME)
-    if cookie_token:
-        return cookie_token
+    """Extract access token from Authorization Bearer header or httpOnly cookie.
 
+    Authorization header takes precedence over cookies.
+    """
     auth_header = request.headers.get("Authorization")
     if auth_header:
         scheme, _, token = auth_header.partition(" ")
         if scheme.lower() == "bearer" and token.strip():
             return token.strip()
+
+    cookie_token = request.cookies.get(COOKIE_NAME)
+    if cookie_token:
+        return cookie_token
 
     return None
 

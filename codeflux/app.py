@@ -11,6 +11,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from codeflux.api import (
+    admin_requests_router,
+    auth_router,
+    keys_router,
+    member_requests_router,
+    routes_router,
+    vault_router,
+)
 from codeflux.errors import NoProviderAvailable
 from codeflux.gateway.auth import authenticate
 from codeflux.gateway.circuit import CircuitBreaker
@@ -83,6 +91,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
     )
+
+    app.include_router(auth_router)
+    app.include_router(vault_router)
+    app.include_router(keys_router)
+    app.include_router(routes_router)
+    app.include_router(member_requests_router)
+    app.include_router(admin_requests_router)
 
     def error_response(status_code: int, message: str, error_type: str) -> JSONResponse:
         # "error" is the shape OpenAI/Gemini SDKs parse; "detail" keeps FastAPI clients working.
