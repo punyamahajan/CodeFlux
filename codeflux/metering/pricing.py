@@ -23,6 +23,7 @@ class ModelPrice:
     list_output_per_1m: int
     is_free_tier: bool = False
     description: str = "Estimated pricing"
+    context_budget: int = 6000
 
 
 # Known model pricing table (micro-USD per 1,000,000 tokens)
@@ -155,6 +156,12 @@ def get_model_price(model: str) -> ModelPrice:
             return price
 
     return PRICING_TABLE["default"]
+
+
+def get_context_budget(model: str) -> int:
+    """Get the context token budget for a model (default 6000)."""
+    price = get_model_price(model)
+    return getattr(price, "context_budget", 6000)
 
 
 def compute_cost(

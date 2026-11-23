@@ -20,6 +20,7 @@ from codeflux.api import (
     demo_router,
     keys_router,
     member_requests_router,
+    member_sessions_router,
     member_usage_router,
     routes_router,
     vault_router,
@@ -42,6 +43,11 @@ from codeflux.logging import configure_logging
 from codeflux.metering.service import record_usage_and_trace
 from codeflux.providers.registry import AdapterRegistry
 from codeflux.schemas import GeminiRequest
+from codeflux.sessions.service import (
+    get_or_create_gateway_session,
+    prepare_session_messages,
+    save_session_turn,
+)
 from codeflux.settings import Settings, load_config
 from codeflux.storage import (
     ClientKeyRepository,
@@ -84,7 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         app.state.config = config
         app.state.database = database
-        app.state.session_factory = database.sessions
+        app.state.session_factory = getattr(app.state, "session_factory", None) or database.sessions
         app.state.client = client
         app.state.registry = registry
         app.state.breaker = breaker
@@ -123,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_router)
     app.include_router(demo_router)
     app.include_router(member_requests_router)
+    app.include_router(member_sessions_router)
     app.include_router(admin_requests_router)
     app.include_router(admin_usage_router)
     app.include_router(member_usage_router)
@@ -267,6 +274,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if allowed_routes is not None:
             kwargs["allowed_routes"] = allowed_routes
 
+        session_id = request.headers.get("x-omnikey-session", "").strip() or None
+        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+            getattr(request.app.state, "database", None), "sessions", None
+        )
+        session_meta = None
+        org_id = getattr(request.state, "org_id", None) or "org_default"
+        key_id = getattr(request.state, "key_id", None)
+
+        db_session = getattr(request.state, "db_session", None)
+        db_source = db_session or session_factory
+        if session_id and db_source:
+            _, err = await get_or_create_gateway_session(db_source, org_id, key_id, session_id)
+            if err:
+                raise PermissionError(err)
+            if normalized.messages:
+                dispatched_messages, session_meta = await prepare_session_messages(
+                    db_source, session_id, normalized.messages, normalized.model
+                )
+                normalized = normalized.model_copy(update={"messages": dispatched_messages})
+
         if normalized.stream:
             try:
                 result = await router.route_stream(
@@ -282,6 +309,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stream_prompt_tokens = 0
                 stream_completion_tokens = 0
                 full_chars = 0
+                full_content_parts: list[str] = []
                 try:
                     async for chunk in result.chunks:
                         if getattr(chunk, "is_error", False) or chunk.finish_reason == "error":
@@ -292,6 +320,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             stream_completion_tokens = chunk.usage.completion_tokens
                         if chunk.content:
                             full_chars += len(chunk.content)
+                            full_content_parts.append(chunk.content)
                         delta = {}
                         if chunk.content is not None:
                             delta["content"] = chunk.content
@@ -317,12 +346,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if stream_prompt_tokens == 0 and stream_completion_tokens == 0 and full_chars > 0:
                     stream_completion_tokens = max(1, full_chars // 4)
                 elapsed_ms = int((time.monotonic() - start_time) * 1000)
-                session_factory = getattr(request.app.state, "session_factory", None) or getattr(
-                    getattr(request.app.state, "database", None), "sessions", None
+                provider_changed = bool(
+                    session_meta
+                    and session_meta.last_provider
+                    and session_meta.last_provider != result.provider
                 )
+                assistant_content = "".join(full_content_parts) if full_content_parts else None
+
                 if session_factory:
-                    org_id = getattr(request.state, "org_id", None) or "org_default"
-                    key_id = getattr(request.state, "key_id", None)
+                    if session_id and session_meta:
+                        await save_session_turn(
+                            session_factory,
+                            session_id=session_id,
+                            org_id=org_id,
+                            incoming_messages=session_meta.new_incoming_messages,
+                            assistant_content=assistant_content,
+                            provider=result.provider,
+                            model=normalized.model,
+                        )
+                    trace_facts: dict[str, Any] = {
+                        "attempts": getattr(result, "attempt_records", None) or [],
+                    }
+                    if session_meta:
+                        trace_facts.update(
+                            {
+                                "session_id": session_id,
+                                "context_carried": session_meta.context_carried,
+                                "messages_sent": session_meta.messages_sent,
+                                "messages_trimmed": session_meta.messages_trimmed,
+                                "provider_changed": provider_changed,
+                            }
+                        )
                     await record_usage_and_trace(
                         session_factory,
                         org_id=org_id,
@@ -333,7 +387,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         latency_ms=elapsed_ms,
                         prompt_tokens=stream_prompt_tokens,
                         completion_tokens=stream_completion_tokens,
-                        facts={"attempts": getattr(result, "attempt_records", None) or []},
+                        facts=trace_facts,
                     )
 
             return StreamingResponse(
@@ -357,15 +411,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = to_openai(result.response, operation, normalized.model)
         response["codeflux"] = {"provider": result.provider, "attempts": result.attempts}
 
-        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
-            getattr(request.app.state, "database", None), "sessions", None
+        provider_changed = bool(
+            session_meta
+            and session_meta.last_provider
+            and session_meta.last_provider != result.provider
         )
+        assistant_content = result.response.content
+
         if session_factory:
+            if session_id and session_meta:
+                background_tasks.add_task(
+                    save_session_turn,
+                    session_factory,
+                    session_id=session_id,
+                    org_id=org_id,
+                    incoming_messages=session_meta.new_incoming_messages,
+                    assistant_content=assistant_content,
+                    provider=result.provider,
+                    model=normalized.model,
+                )
+
             usage = result.response.usage
             prompt_tokens = usage.prompt_tokens if usage else 0
             completion_tokens = usage.completion_tokens if usage else 0
-            org_id = getattr(request.state, "org_id", None) or "org_default"
-            key_id = getattr(request.state, "key_id", None)
+            trace_facts: dict[str, Any] = {
+                "attempts": getattr(result, "attempt_records", None) or [],
+            }
+            if session_meta:
+                trace_facts.update(
+                    {
+                        "session_id": session_id,
+                        "context_carried": session_meta.context_carried,
+                        "messages_sent": session_meta.messages_sent,
+                        "messages_trimmed": session_meta.messages_trimmed,
+                        "provider_changed": provider_changed,
+                    }
+                )
             background_tasks.add_task(
                 record_usage_and_trace,
                 session_factory,
@@ -377,7 +458,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latency_ms=elapsed_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                facts={"attempts": getattr(result, "attempt_records", None) or []},
+                facts=trace_facts,
             )
 
         return response
@@ -429,26 +510,74 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if allowed_routes is not None:
             kwargs["allowed_routes"] = allowed_routes
 
+        session_id = request.headers.get("x-omnikey-session", "").strip() or None
+        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
+            getattr(request.app.state, "database", None), "sessions", None
+        )
+        session_meta = None
+        org_id = getattr(request.state, "org_id", None) or "org_default"
+        key_id = getattr(request.state, "key_id", None)
+
+        db_session = getattr(request.state, "db_session", None)
+        db_source = db_session or session_factory
+        normalized = gemini_request(model, payload)
+        if session_id and db_source:
+            _, err = await get_or_create_gateway_session(db_source, org_id, key_id, session_id)
+            if err:
+                raise PermissionError(err)
+            if normalized.messages:
+                dispatched_messages, session_meta = await prepare_session_messages(
+                    db_source, session_id, normalized.messages, model
+                )
+                normalized = normalized.model_copy(update={"messages": dispatched_messages})
+
         try:
             result = await router.route(
-                gemini_request(model, payload),
+                normalized,
                 team,
                 **kwargs,
             )
         except TypeError:
-            result = await router.route(gemini_request(model, payload), team)
+            result = await router.route(normalized, team)
         elapsed_ms = int((time.monotonic() - start_time) * 1000)
         gemini_resp = to_gemini(result.response)
 
-        session_factory = getattr(request.app.state, "session_factory", None) or getattr(
-            getattr(request.app.state, "database", None), "sessions", None
+        provider_changed = bool(
+            session_meta
+            and session_meta.last_provider
+            and session_meta.last_provider != result.provider
         )
+        assistant_content = result.response.content
+
         if session_factory:
+            if session_id and session_meta:
+                background_tasks.add_task(
+                    save_session_turn,
+                    session_factory,
+                    session_id=session_id,
+                    org_id=org_id,
+                    incoming_messages=session_meta.new_incoming_messages,
+                    assistant_content=assistant_content,
+                    provider=result.provider,
+                    model=model,
+                )
+
             usage = result.response.usage
             prompt_tokens = usage.prompt_tokens if usage else 0
             completion_tokens = usage.completion_tokens if usage else 0
-            org_id = getattr(request.state, "org_id", None) or "org_default"
-            key_id = getattr(request.state, "key_id", None)
+            trace_facts: dict[str, Any] = {
+                "attempts": getattr(result, "attempt_records", None) or [],
+            }
+            if session_meta:
+                trace_facts.update(
+                    {
+                        "session_id": session_id,
+                        "context_carried": session_meta.context_carried,
+                        "messages_sent": session_meta.messages_sent,
+                        "messages_trimmed": session_meta.messages_trimmed,
+                        "provider_changed": provider_changed,
+                    }
+                )
             background_tasks.add_task(
                 record_usage_and_trace,
                 session_factory,
@@ -460,7 +589,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latency_ms=elapsed_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                facts={"attempts": getattr(result, "attempt_records", None) or []},
+                facts=trace_facts,
             )
 
         return gemini_resp

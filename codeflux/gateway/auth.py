@@ -134,6 +134,7 @@ async def authenticate(
         request.state.platform_key = platform_key
         request.state.key_id = platform_key.id
         request.state.org_id = platform_key.org_id
+        request.state.db_session = session
         return platform_key.name or platform_key.id
 
     # 2. Fallback to legacy client_key_repository / client_keys for test compatibility

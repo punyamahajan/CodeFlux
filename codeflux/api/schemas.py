@@ -277,3 +277,40 @@ class UsageOverviewResponse(BaseModel):
     by_model: list[ModelUsageSummary]
     ledger: list[LedgerEntryResponse]
     next_cursor: str | None = None
+
+
+# ============================================================================
+# Session Schemas
+# ============================================================================
+
+
+class SessionMessageItem(BaseModel):
+    id: str
+    role: str
+    content: str | None = None
+    created_at: datetime
+    metadata_json: dict[str, Any] | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SessionItem(BaseModel):
+    id: str
+    org_id: str
+    key_id: str
+    created_at: datetime
+    last_active_at: datetime
+    message_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SessionDetailResponse(BaseModel):
+    id: str
+    org_id: str
+    key_id: str
+    created_at: datetime
+    last_active_at: datetime
+    messages: list[SessionMessageItem]
+
+    model_config = ConfigDict(from_attributes=True)
