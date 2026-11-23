@@ -31,6 +31,7 @@ from codeflux.gateway.normalization import (
     to_openai,
 )
 from codeflux.gateway.pii import PIIRedactor
+from codeflux.gateway.ratelimit import SlidingWindowRpmLimiter
 from codeflux.gateway.router import RoutingEngine
 from codeflux.logging import configure_logging
 from codeflux.providers.registry import AdapterRegistry
@@ -64,16 +65,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
         # No read limit here: each candidate's timeout_seconds (enforced by the router) decides,
         # so slow local models are not cut off at a fixed 30 seconds.
-        client = httpx.AsyncClient(timeout=httpx.Timeout(None, connect=10))
+        limits = httpx.Limits(max_keepalive_connections=50, max_connections=200)
+        timeout = httpx.Timeout(timeout=60.0, connect=10.0)
+        client = httpx.AsyncClient(limits=limits, timeout=timeout)
         registry = AdapterRegistry(client, config.provider_base_urls)
         breaker = CircuitBreaker(
             config.circuit_breaker.failure_threshold, config.circuit_breaker.cooldown_seconds
         )
+        from codeflux.gateway.ratelimit import SlidingWindowRpmLimiter
+
         app.state.config = config
         app.state.database = database
         app.state.client = client
         app.state.registry = registry
         app.state.breaker = breaker
+        app.state.rpm_limiter = SlidingWindowRpmLimiter()
         app.state.client_keys = settings.client_keys()
         app.state.client_key_repository = ClientKeyRepository(
             database.sessions, settings.master_secret
@@ -87,9 +93,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await database.close()
 
     app = FastAPI(title="CodeFlux", version="0.1.0", lifespan=lifespan)
-    # Browser apps call the gateway directly; the API key, not the origin, is the credential.
+    app.state.rpm_limiter = SlidingWindowRpmLimiter()
+    cors_origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
     app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+        CORSMiddleware,
+        allow_origins=cors_origins or ["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(auth_router)
@@ -129,6 +140,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse(
                 status_code=exc.status_code,
                 content={"error": {"code": code, "message": message}},
+                headers=exc.headers,
+            )
+        if isinstance(exc.detail, dict):
+            message = exc.detail.get("message", str(exc.detail))
+            error_type = exc.detail.get(
+                "type",
+                {401: "invalid_api_key", 429: "insufficient_quota"}.get(
+                    exc.status_code, "invalid_request_error"
+                ),
+            )
+            code = exc.detail.get("code", exc.status_code)
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "error": {"message": message, "type": error_type, "code": code},
+                    "detail": message,
+                },
                 headers=exc.headers,
             )
         error_type = {401: "invalid_api_key", 429: "insufficient_quota"}.get(

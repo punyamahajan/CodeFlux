@@ -14,7 +14,7 @@ from codeflux.gateway.keypool import KeyPool
 from codeflux.gateway.pii import PIIRedactor
 from codeflux.metrics import CIRCUITS, FAILOVERS, LATENCY, REQUESTS, TOKENS
 from codeflux.providers.registry import AdapterRegistry
-from codeflux.schemas import NormalizedRequest, NormalizedResponse, StreamChunk
+from codeflux.schemas import NormalizedRequest, NormalizedResponse, StreamChunk, Usage
 from codeflux.settings import AppConfig, CandidateConfig, RouteConfig
 from codeflux.storage import UsageRepository
 
@@ -159,6 +159,19 @@ class RoutingEngine:
                     adapter.chat_completion(provider_request, api_key),
                     timeout=min(remaining, candidate.timeout_seconds),
                 )
+                if response.usage.total_tokens == 0:
+                    prompt_chars = sum(len(str(m.content or "")) for m in request.messages)
+                    if request.prompt:
+                        prompt_chars += len(str(request.prompt))
+                    completion_chars = len(str(response.content or ""))
+                    p_tok = max(1, prompt_chars // 4)
+                    c_tok = max(1, completion_chars // 4) if completion_chars else 0
+                    response.usage = Usage(
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=p_tok + c_tok,
+                        estimated=True,
+                    )
                 await self.key_pool.update_limits(key_ref, response.rate_limit_headers)
                 elapsed = time.monotonic() - started
                 self._latencies[candidate.provider].append(elapsed)

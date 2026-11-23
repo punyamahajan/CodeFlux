@@ -133,8 +133,9 @@ class OpenAICompatibleAdapter:
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 data = json.loads(line[6:])
-                choice = data.get("choices", [{}])[0]
-                delta = choice.get("delta", {})
+                choices = data.get("choices") or []
+                choice = choices[0] if choices else {}
+                delta = choice.get("delta", {}) if choice else {}
                 usage_data = data.get("usage")
                 yield StreamChunk(
                     id=data.get("id", ""),

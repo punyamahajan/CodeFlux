@@ -181,16 +181,43 @@ class GeminiAdapter:
     async def stream_chat_completion(
         self, request: NormalizedRequest, api_key: str | None = None
     ) -> AsyncIterator[StreamChunk]:
-        # Gemini SSE formats vary; a non-buffering implementation can be added without changing the router contract.
-        result = await self.chat_completion(request, api_key)
-        yield StreamChunk(
-            id=result.id,
-            model=result.model,
-            content=result.content,
-            tool_calls=result.tool_calls,
-            finish_reason=result.finish_reason,
-            usage=result.usage,
-        )
+        url = f"{self.base_url}/models/{request.model}:streamGenerateContent?alt=sse"
+        headers = {"x-goog-api-key": api_key} if api_key else None
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+        async with self.client.stream(
+            "POST", url, json=self._body(request), headers=headers
+        ) as response:
+            if response.is_error:
+                await response.aread()
+                raise ProviderError(
+                    f"gemini returned {response.status_code}",
+                    status_code=response.status_code,
+                )
+            async for line in response.aiter_lines():
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                data = json.loads(line[6:])
+                candidates = data.get("candidates") or []
+                candidate = candidates[0] if candidates else {}
+                parts = candidate.get("content", {}).get("parts", [])
+                text = "".join(part.get("text", "") for part in parts) or None
+                metadata = data.get("usageMetadata", {})
+                usage = (
+                    Usage(
+                        prompt_tokens=metadata.get("promptTokenCount", 0),
+                        completion_tokens=metadata.get("candidatesTokenCount", 0),
+                        total_tokens=metadata.get("totalTokenCount", 0),
+                    )
+                    if metadata
+                    else None
+                )
+                yield StreamChunk(
+                    id=chunk_id,
+                    model=request.model,
+                    content=text,
+                    finish_reason=candidate.get("finishReason", "").lower() or None,
+                    usage=usage,
+                )
 
     async def health_check(self) -> ProviderHealth:
         started = time.monotonic()

@@ -12,6 +12,15 @@ default_route: gemini-tier
 default_embedding_route: embeddings
 
 routes:
+  groq-tier:
+    strategy: priority
+    total_timeout_seconds: 60
+    candidates:
+      - provider: groq
+        model: qwen/qwen3.8-27b
+        api_key_ref: groq-primary
+        timeout_seconds: 15
+
   gpt-4-tier:
     strategy: priority
     total_timeout_seconds: 420
