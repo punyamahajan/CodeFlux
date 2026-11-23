@@ -77,25 +77,27 @@ export const AdminKeys: React.FC = () => {
     <div className="space-y-8 py-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center space-x-2">
-            <Key className="w-6 h-6 text-emerald-400" />
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center space-x-2">
+            <div className="p-1.5 rounded-xl bg-indigo-50 border border-indigo-100 text-indigo-600">
+              <Key className="w-5 h-5" />
+            </div>
             <span>Platform API Keys</span>
           </h1>
-          <p className="text-xs text-slate-400">
-            Issue prefixed <code className="text-emerald-400 font-mono">ok_live_</code> keys with strict credit and RPM limits.
+          <p className="text-xs text-slate-500">
+            Issue prefixed <code className="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-mono font-medium">ok_live_</code> keys with strict credit and RPM limits.
           </p>
         </div>
         <div className="flex items-center space-x-3">
           <button
             onClick={loadKeys}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition"
+            className="p-2 bg-white hover:bg-slate-50 text-slate-600 border border-slate-200/80 rounded-xl transition cursor-pointer shadow-xs"
             title="Refresh"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
           <button
             onClick={() => setShowCreate(!showCreate)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-lg shadow-emerald-600/20 transition cursor-pointer"
+            className="px-4 py-2 bg-gradient-to-r from-indigo-600 via-violet-600 to-purple-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-500/25 transition cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Generate Platform Key</span>
@@ -104,7 +106,7 @@ export const AdminKeys: React.FC = () => {
       </div>
 
       {error && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-300 text-sm flex items-center space-x-3">
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-sm flex items-center space-x-3">
           <AlertCircle className="w-5 h-5 flex-shrink-0" />
           <span>{error}</span>
         </div>
@@ -112,22 +114,22 @@ export const AdminKeys: React.FC = () => {
 
       {/* Create Modal */}
       {showCreate && (
-        <form onSubmit={handleCreate} className="p-6 bg-slate-900 border border-emerald-500/40 rounded-2xl space-y-4 shadow-xl animate-fade-in">
-          <h3 className="text-sm font-semibold text-white">Generate New Platform Key</h3>
+        <form onSubmit={handleCreate} className="p-6 bg-white border border-indigo-200 rounded-2xl space-y-4 shadow-xl shadow-indigo-100/40">
+          <h3 className="text-sm font-semibold text-slate-900">Generate New Platform Key</h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="text-xs font-medium text-slate-300 block mb-1">Key Name / Description</label>
+              <label className="text-xs font-medium text-slate-700 block mb-1">Key Name / Description</label>
               <input
                 type="text"
                 required
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Production Backend"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500"
+                className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-300 block mb-1">Credit Limit (USD)</label>
+              <label className="text-xs font-medium text-slate-700 block mb-1">Credit Limit (USD)</label>
               <input
                 type="number"
                 step="0.5"
@@ -135,18 +137,18 @@ export const AdminKeys: React.FC = () => {
                 required
                 value={limitDollars}
                 onChange={(e) => setLimitDollars(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-300 block mb-1">RPM Limit (req/min)</label>
+              <label className="text-xs font-medium text-slate-700 block mb-1">RPM Limit (req/min)</label>
               <input
                 type="number"
                 min="1"
                 required
                 value={rpmLimit}
                 onChange={(e) => setRpmLimit(parseInt(e.target.value, 10))}
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                className="w-full px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono"
               />
             </div>
           </div>
@@ -154,14 +156,14 @@ export const AdminKeys: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowCreate(false)}
-              className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-medium hover:bg-slate-700 transition"
+              className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-50 transition cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition disabled:opacity-50"
+              className="px-5 py-2 bg-gradient-to-r from-indigo-600 via-violet-600 to-purple-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/25 transition disabled:opacity-50 cursor-pointer"
             >
               {submitting ? 'Generating...' : 'Create Key'}
             </button>
@@ -170,10 +172,10 @@ export const AdminKeys: React.FC = () => {
       )}
 
       {/* Keys Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+      <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-950/60 border-b border-slate-800 text-slate-400 uppercase tracking-wider font-semibold">
+            <thead className="bg-slate-50/80 border-b border-slate-200/80 text-slate-500 uppercase tracking-wider font-semibold text-[11px]">
               <tr>
                 <th className="py-3.5 px-4">Key Name</th>
                 <th className="py-3.5 px-4">Prefix</th>
@@ -183,18 +185,22 @@ export const AdminKeys: React.FC = () => {
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60 text-slate-300">
+            <tbody className="divide-y divide-slate-100 text-slate-700">
               {keys.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500">
+                  <td colSpan={6} className="py-12 text-center text-slate-400">
                     No platform keys created yet. Generate one above!
                   </td>
                 </tr>
               ) : (
                 keys.map((k) => (
-                  <tr key={k.id} className="hover:bg-slate-800/30 transition">
-                    <td className="py-3.5 px-4 font-semibold text-slate-100">{k.name}</td>
-                    <td className="py-3.5 px-4 font-mono text-emerald-400">{k.key_prefix}••••</td>
+                  <tr key={k.id} className="hover:bg-slate-50/60 transition">
+                    <td className="py-3.5 px-4 font-semibold text-slate-900">{k.name}</td>
+                    <td className="py-3.5 px-4 font-mono">
+                      <span className="bg-indigo-50 border border-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-xs">
+                        {k.key_prefix}••••
+                      </span>
+                    </td>
                     <td className="py-3.5 px-4">
                       <div className="flex items-center space-x-2">
                         <div className="flex-1">
@@ -206,13 +212,13 @@ export const AdminKeys: React.FC = () => {
                         <WhyButton onClick={() => setWhyKeyId(k.id)} />
                       </div>
                     </td>
-                    <td className="py-3.5 px-4 font-mono">{k.rpm_limit} / min</td>
+                    <td className="py-3.5 px-4 font-mono text-slate-600">{k.rpm_limit} / min</td>
                     <td className="py-3.5 px-4">
                       <span
                         className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${
                           k.revoked_at
-                            ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200/80'
                         }`}
                       >
                         {k.revoked_at ? 'Revoked' : 'Active'}
@@ -222,7 +228,7 @@ export const AdminKeys: React.FC = () => {
                       {!k.revoked_at && (
                         <button
                           onClick={() => handleRevoke(k.id)}
-                          className="p-1.5 text-rose-400 hover:bg-rose-500/10 border border-rose-500/20 rounded-lg transition"
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition cursor-pointer"
                           title="Revoke key"
                         >
                           <Ban className="w-3.5 h-3.5" />

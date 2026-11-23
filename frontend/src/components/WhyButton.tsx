@@ -18,10 +18,10 @@ export const WhyButton: React.FC<WhyButtonProps> = ({
         e.stopPropagation()
         onClick()
       }}
-      className={`inline-flex items-center space-x-1 px-2 py-0.5 text-xs font-medium text-emerald-400 bg-emerald-950/60 hover:bg-emerald-900/60 border border-emerald-800/60 rounded-full transition cursor-pointer ${className}`}
+      className={`inline-flex items-center space-x-1 px-2.5 py-0.5 text-xs font-semibold text-indigo-700 bg-gradient-to-r from-indigo-50 to-violet-50 hover:from-indigo-100 hover:to-violet-100 border border-indigo-200/80 rounded-full transition shadow-xs cursor-pointer ${className}`}
       title="View explanation and facts behind this decision or number"
     >
-      <HelpCircle className="w-3 h-3" />
+      <HelpCircle className="w-3 h-3 text-indigo-600" />
       <span>{label}</span>
     </button>
   )

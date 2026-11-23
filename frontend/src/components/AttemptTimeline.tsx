@@ -30,40 +30,40 @@ export const AttemptTimeline: React.FC<AttemptTimelineProps> = ({ attempts }) =>
         return (
           <div
             key={idx}
-            className={`p-3 rounded-xl border flex items-start justify-between text-xs ${
+            className={`p-3 rounded-xl border flex items-start justify-between text-xs transition ${
               isSuccess
-                ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
+                ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
                 : isSkipped
-                ? 'bg-slate-900 border-slate-800 text-slate-400'
-                : 'bg-rose-950/20 border-rose-800/40 text-rose-300'
+                ? 'bg-slate-50 border-slate-200 text-slate-600'
+                : 'bg-rose-50/70 border-rose-200 text-rose-900'
             }`}
           >
             <div className="flex items-start space-x-2.5">
               <div className="mt-0.5">
-                {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-600" />}
                 {isSkipped && <SkipForward className="w-4 h-4 text-slate-400" />}
-                {isFailed && <XCircle className="w-4 h-4 text-rose-400" />}
+                {isFailed && <XCircle className="w-4 h-4 text-rose-600" />}
               </div>
               <div>
-                <div className="font-semibold text-slate-100 flex items-center space-x-2">
+                <div className="font-semibold text-slate-900 flex items-center space-x-2">
                   <span>{att.provider} / {att.model}</span>
                   {att.status_code && (
-                    <span className="px-1.5 py-0.2 bg-slate-800 rounded font-mono text-[10px]">
+                    <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono text-[10px] text-slate-700">
                       HTTP {att.status_code}
                     </span>
                   )}
                 </div>
                 {att.skip_reason && (
-                  <p className="text-[11px] text-slate-400 mt-0.5">Skipped: {att.skip_reason}</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Skipped: {att.skip_reason}</p>
                 )}
                 {att.error && (
-                  <p className="text-[11px] text-rose-400 mt-0.5">Error: {att.error}</p>
+                  <p className="text-[11px] text-rose-700 mt-0.5 font-medium">Error: {att.error}</p>
                 )}
               </div>
             </div>
 
             {att.latency_ms !== null && att.latency_ms !== undefined && (
-              <span className="font-mono text-[11px] text-slate-400">
+              <span className="font-mono text-[11px] text-slate-500 font-medium">
                 {att.latency_ms} ms
               </span>
             )}

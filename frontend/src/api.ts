@@ -74,6 +74,15 @@ export interface RequestTrace {
   completion_tokens: number
   cost_micro: number
   facts: Record<string, any>
+  attempts?: Array<{
+    provider: string
+    model: string
+    status_code?: number | null
+    latency_ms?: number | null
+    error?: string | null
+    skipped?: boolean
+    skip_reason?: string | null
+  }>
   created_at: string
 }
 
