@@ -233,11 +233,14 @@ async def execute_compare_arena(
         normalized = openai_request(req_payload, "chat")
         m_start = time.monotonic()
         try:
-            # Force no fallback by passing custom_fallback with this model directly
+            # Force no fallback for raw models, but allow routes to use their configured candidate chain
+            route_kwargs = (
+                {"custom_fallback": model_name} if model_name not in router.config.routes else {}
+            )
             res = await router.route(
                 normalized,
                 user_email,
-                custom_fallback=model_name,
+                **route_kwargs,
             )
             m_elapsed = int((time.monotonic() - m_start) * 1000)
             u = res.response.usage
@@ -632,7 +635,8 @@ async def _run_debate_turn(
 
     req = openai_request({"model": model, "messages": messages}, "chat")
     try:
-        res = await router.route(req, user_email, custom_fallback=model)
+        route_kwargs = {"custom_fallback": model} if model not in router.config.routes else {}
+        res = await router.route(req, user_email, **route_kwargs)
         content = res.response.content or ""
         # Cap strictly at 120 words
         words = content.split()
@@ -685,7 +689,10 @@ async def _call_judge_with_retry[T: BaseModel](
                 },
                 "chat",
             )
-            res = await router.route(req, user_email, custom_fallback=judge_model)
+            route_kwargs = (
+                {"custom_fallback": judge_model} if judge_model not in router.config.routes else {}
+            )
+            res = await router.route(req, user_email, **route_kwargs)
             text = (res.response.content or "").strip()
             # Clean possible markdown fence
             if text.startswith("```"):

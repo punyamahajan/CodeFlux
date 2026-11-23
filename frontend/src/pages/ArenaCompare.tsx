@@ -6,10 +6,10 @@ import { WhyButton } from '../components/WhyButton'
 import { WhyPanel } from '../components/WhyPanel'
 
 export const ArenaCompare: React.FC = () => {
-  const [prompt, setPrompt] = useState('Compare the pros and cons of SQLite vs PostgreSQL for local development.')
-  const [modelInputs, setModelInputs] = useState(['gpt-4o-mini', 'claude-3-haiku', 'gemini-2.0-flash'])
+  const [prompt, setPrompt] = useState('Compare the pros and cons of SQLite vs PostgreSQL for local development in 2 bullet points.')
+  const [modelInputs, setModelInputs] = useState(['fast', 'smart', 'gemini-tier'])
   const [judge, setJudge] = useState(true)
-  const [judgeModel, setJudgeModel] = useState('gpt-4o-mini')
+  const [judgeModel, setJudgeModel] = useState('fast')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

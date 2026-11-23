@@ -6,10 +6,10 @@ import { WhyPanel } from '../components/WhyPanel'
 
 export const ArenaDebate: React.FC = () => {
   const [topic, setTopic] = useState('Should AI code generators be required to attribute their training data sources?')
-  const [modelA, setModelA] = useState('gpt-4o-mini')
-  const [modelB, setModelB] = useState('claude-3-haiku')
-  const [judgeModel, setJudgeModel] = useState('gpt-4o-mini')
-  const [rounds, setRounds] = useState(2)
+  const [modelA, setModelA] = useState('fast')
+  const [modelB, setModelB] = useState('gemini-tier')
+  const [judgeModel, setJudgeModel] = useState('smart')
+  const [rounds, setRounds] = useState(1)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

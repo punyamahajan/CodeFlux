@@ -28,10 +28,11 @@ async def create_platform_key(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PlatformKeyCreatedResponse:
     settings = Settings()
+    target_user_id = payload.user_id or admin.id
     key, plaintext = await PlatformKeyService.create_key(
         session=session,
         org_id=admin.org_id,
-        user_id=payload.user_id,
+        user_id=target_user_id,
         name=payload.name,
         credit_limit_micro=payload.credit_limit_micro,
         rpm_limit=payload.rpm_limit,
@@ -55,6 +56,8 @@ async def create_platform_key(
         "created_at": key.created_at,
         "last_used_at": key.last_used_at,
         "key": plaintext,  # Returned only once!
+        "plaintext": plaintext,
+        "raw_key": plaintext,
     }
     return PlatformKeyCreatedResponse.model_validate(key_dict)
 

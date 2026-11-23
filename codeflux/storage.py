@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 from datetime import UTC, datetime
 
@@ -16,8 +17,11 @@ from sqlalchemy import (
     func,
     select,
 )
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+logger = logging.getLogger("codeflux.storage")
 
 
 class Base(DeclarativeBase):
@@ -85,6 +89,7 @@ class Database:
 
 class CredentialVault:
     def __init__(self, sessions: async_sessionmaker[AsyncSession], master_secret: str):
+        self.master_secret = master_secret
         digest = hashlib.sha256(master_secret.encode()).digest()
         self.fernet = Fernet(base64.urlsafe_b64encode(digest))
         self.sessions = sessions
@@ -104,23 +109,75 @@ class CredentialVault:
             await session.commit()
 
     async def get(self, reference: str) -> str | None:
+        if reference.startswith("env-"):
+            import os
+
+            prov = reference.split("env-", 1)[1]
+            return os.getenv(f"{prov.upper()}_API_KEY")
+
         async with self.sessions() as session:
             credential = await session.scalar(
                 select(Credential).where(Credential.reference == reference)
             )
-            if not credential:
-                return None
+            if credential:
+                try:
+                    return self.fernet.decrypt(credential.encrypted_value.encode()).decode()
+                except InvalidToken:
+                    pass
+
+            from codeflux.db.models import ProviderCredential
+            from codeflux.security.crypto import decrypt_provider_key
+
             try:
-                return self.fernet.decrypt(credential.encrypted_value.encode()).decode()
-            except InvalidToken:
-                return None
+                prov_cred = await session.scalar(
+                    select(ProviderCredential).where(
+                        (ProviderCredential.id == reference)
+                        | (ProviderCredential.key_hint == reference)
+                        | (ProviderCredential.provider == reference)
+                    )
+                )
+                if prov_cred and prov_cred.enabled:
+                    return decrypt_provider_key(prov_cred.encrypted_key, self.master_secret)
+            except (SQLAlchemyError, InvalidToken, ValueError) as exc:
+                logger.debug("Failed resolving ProviderCredential for %s: %s", reference, exc)
+
+            import os
+
+            return os.getenv(f"{reference.upper()}_API_KEY")
 
     async def references(self, provider: str) -> list[str]:
         async with self.sessions() as session:
-            values = await session.scalars(
-                select(Credential.reference).where(Credential.provider == provider)
+            values = list(
+                await session.scalars(
+                    select(Credential.reference).where(Credential.provider == provider)
+                )
             )
-            return list(values)
+
+            from codeflux.db.models import ProviderCredential
+
+            try:
+                prov_creds = list(
+                    await session.scalars(
+                        select(ProviderCredential.id).where(
+                            ProviderCredential.provider == provider,
+                            ProviderCredential.enabled == True,
+                        )
+                    )
+                )
+                values.extend(prov_creds)
+            except (SQLAlchemyError, ValueError) as exc:
+                logger.debug("Failed listing ProviderCredential for %s: %s", provider, exc)
+
+            import os
+
+            env_key = os.getenv(f"{provider.upper()}_API_KEY")
+            if env_key:
+                values.append(f"env-{provider}")
+
+            # Also allow fallback aliases if candidate specified e.g. "groq-primary"
+            if not values:
+                return []
+            return list(dict.fromkeys(values))
 
     def _decrypts(self, encrypted_value: str) -> bool:
         try:

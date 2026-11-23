@@ -18,6 +18,7 @@ from starlette.staticfiles import StaticFiles
 
 from codeflux.api import (
     admin_requests_router,
+    admin_traces_router,
     admin_usage_router,
     arena_router,
     auth_router,
@@ -31,6 +32,7 @@ from codeflux.api import (
     routes_router,
     vault_router,
 )
+from codeflux.db.session import get_shared_database
 from codeflux.errors import NoProviderAvailable, ProviderError
 from codeflux.gateway.auth import authenticate
 from codeflux.gateway.circuit import CircuitBreaker
@@ -58,7 +60,6 @@ from codeflux.settings import Settings, load_config
 from codeflux.storage import (
     ClientKeyRepository,
     CredentialVault,
-    Database,
     UsageRepository,
 )
 
@@ -72,7 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         config = load_config(settings.config_path)
-        database = Database(settings.database_url)
+        database = get_shared_database(settings.database_url)
         await database.initialize()
         vault = CredentialVault(database.sessions, settings.master_secret)
         try:
@@ -137,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(member_requests_router)
     app.include_router(member_sessions_router)
     app.include_router(admin_requests_router)
+    app.include_router(admin_traces_router)
     app.include_router(admin_usage_router)
     app.include_router(member_usage_router)
     app.include_router(explain_router)
@@ -691,7 +693,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-    if frontend_dist.exists():
+    is_test = getattr(settings, "env", "dev").strip().lower() in ("test", "testing")
+    if not is_test and frontend_dist.exists():
         assets_dir = frontend_dist / "assets"
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")

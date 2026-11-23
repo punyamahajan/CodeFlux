@@ -118,9 +118,9 @@ class VaultPatchRequest(BaseModel):
 
 
 class PlatformKeyCreateRequest(BaseModel):
-    user_id: str = Field(min_length=1)
+    user_id: str | None = None
     name: str = Field(min_length=1, max_length=128)
-    credit_limit_micro: int = Field(ge=0)
+    credit_limit_micro: int = Field(default=10_000_000, ge=0)
     rpm_limit: int = Field(default=60, ge=1)
     allowed_routes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
@@ -145,6 +145,8 @@ class PlatformKeyResponse(BaseModel):
 
 class PlatformKeyCreatedResponse(PlatformKeyResponse):
     key: str  # Plaintext key returned strictly once at creation!
+    plaintext: str | None = None
+    raw_key: str | None = None
 
 
 class PlatformKeyPatchRequest(BaseModel):

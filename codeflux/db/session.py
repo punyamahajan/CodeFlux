@@ -55,12 +55,17 @@ class Database:
         await self.engine.dispose()
 
 
+_SHARED_DATABASE: Database | None = None
+
+
+def get_shared_database(url: str | None = None) -> Database:
+    global _SHARED_DATABASE
+    if _SHARED_DATABASE is None:
+        _SHARED_DATABASE = Database(url=url)
+    return _SHARED_DATABASE
+
+
 async def get_db_session() -> AsyncIterator[AsyncSession]:
-    settings = Settings()
-    engine = create_engine(settings.database_url)
-    session_maker = create_session_maker(engine)
-    try:
-        async with session_maker() as session:
-            yield session
-    finally:
-        await engine.dispose()
+    db = get_shared_database()
+    async with db.sessions() as session:
+        yield session

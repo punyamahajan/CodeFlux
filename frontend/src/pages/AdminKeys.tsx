@@ -52,7 +52,9 @@ export const AdminKeys: React.FC = () => {
       })
       setName('')
       setShowCreate(false)
-      setNewKey({ plaintext: res.plaintext, name: res.key.name })
+      const plain = (res as any).plaintext || (res as any).key || (res as any).raw_key
+      const keyName = (res as any).name || (res as any).key?.name || name.trim()
+      setNewKey({ plaintext: plain, name: keyName })
       await loadKeys()
     } catch (err: any) {
       alert(`Failed to create key: ${err.message}`)

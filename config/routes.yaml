@@ -17,11 +17,11 @@ routes:
     total_timeout_seconds: 60
     candidates:
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.8-27b
         api_key_ref: groq-primary
         timeout_seconds: 15
       - provider: gemini
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash-lite
         api_key_ref: gemini-primary
         timeout_seconds: 15
       - provider: openai
@@ -33,30 +33,30 @@ routes:
     strategy: priority
     total_timeout_seconds: 120
     candidates:
-      - provider: openai
-        model: gpt-4o-mini
-        api_key_ref: openai-primary
-        timeout_seconds: 15
       - provider: gemini
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash-lite
         api_key_ref: gemini-primary
         timeout_seconds: 15
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.8-27b
         api_key_ref: groq-primary
+        timeout_seconds: 15
+      - provider: openai
+        model: gpt-4o-mini
+        api_key_ref: openai-primary
         timeout_seconds: 15
 
   code:
     strategy: priority
     total_timeout_seconds: 180
     candidates:
-      - provider: openai
-        model: gpt-4o-mini
-        api_key_ref: openai-primary
-        timeout_seconds: 15
       - provider: groq
         model: qwen/qwen3.8-27b
         api_key_ref: groq-primary
+        timeout_seconds: 15
+      - provider: gemini
+        model: gemini-2.5-flash-lite
+        api_key_ref: gemini-primary
         timeout_seconds: 15
       - provider: ollama
         model: qwen2.5-coder
@@ -80,7 +80,7 @@ routes:
         api_key_ref: openai-primary
         timeout_seconds: 15
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.8-27b
         api_key_ref: groq-primary
         timeout_seconds: 15
 
@@ -89,11 +89,11 @@ routes:
     total_timeout_seconds: 420
     candidates:
       - provider: gemini
-        model: gemini-2.0-flash
+        model: gemini-2.5-flash-lite
         api_key_ref: gemini-primary
         timeout_seconds: 15
       - provider: groq
-        model: llama-3.3-70b-versatile
+        model: qwen/qwen3.8-27b
         api_key_ref: groq-primary
         timeout_seconds: 15
 

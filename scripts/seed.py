@@ -73,18 +73,30 @@ async def seed() -> None:
         bob_user = await get_or_create_user(BOB_EMAIL, "member")
 
         # 3. Provider Credentials
+        import os
+
+        from dotenv import load_dotenv
+
+        load_dotenv()
+
+        live_openai = os.getenv("OPENAI_API_KEY") or "sk-proj-demo-openai-key-abcde1234"
+        live_gemini = os.getenv("GEMINI_API_KEY") or "AQ.Ab8-demo-gemini-key-xyz9876"
+        live_groq = os.getenv("GROQ_API_KEY") or "gsk_demo_groq_key_long_string_5555"
+        live_ollama = os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
+
         providers = [
-            ("openai", "sk-proj-demo-openai-key-abcde1234", "1234"),
-            ("gemini", "AQ.Ab8-demo-gemini-key-xyz9876", "9876"),
-            ("groq", "gsk_demo_groq_key_long_string_5555", "5555"),
-            ("ollama", "http://localhost:11434/v1", "locl"),
+            ("openai", live_openai, live_openai[-4:] if len(live_openai) >= 4 else "1234"),
+            ("gemini", live_gemini, live_gemini[-4:] if len(live_gemini) >= 4 else "9876"),
+            ("groq", live_groq, live_groq[-4:] if len(live_groq) >= 4 else "5555"),
+            ("ollama", live_ollama, "locl"),
         ]
         for prov, raw_k, hint in providers:
             stmt = select(ProviderCredential).where(
                 ProviderCredential.org_id == org.id, ProviderCredential.provider == prov
             )
             res = await session.execute(stmt)
-            if not res.scalar_one_or_none():
+            existing_cred = res.scalar_one_or_none()
+            if not existing_cred:
                 c = ProviderCredential(
                     org_id=org.id,
                     provider=prov,
@@ -94,6 +106,10 @@ async def seed() -> None:
                 )
                 session.add(c)
                 logger.info("Added provider credential: %s", prov)
+            else:
+                existing_cred.encrypted_key = encrypt_provider_key(raw_k, settings.master_key)
+                existing_cred.key_hint = hint
+                logger.info("Updated provider credential with live key: %s", prov)
 
         # 4. Routes (fast, smart, code)
         route_configs = [
@@ -101,8 +117,8 @@ async def seed() -> None:
                 "fast",
                 "least-latency",
                 [
-                    {"provider": "groq", "model": "llama-3.3-70b-versatile", "timeout_seconds": 15},
-                    {"provider": "gemini", "model": "gemini-2.0-flash", "timeout_seconds": 15},
+                    {"provider": "groq", "model": "qwen/qwen3.8-27b", "timeout_seconds": 15},
+                    {"provider": "gemini", "model": "gemini-2.5-flash-lite", "timeout_seconds": 15},
                     {"provider": "openai", "model": "gpt-4o-mini", "timeout_seconds": 15},
                 ],
             ),
@@ -110,17 +126,17 @@ async def seed() -> None:
                 "smart",
                 "priority",
                 [
+                    {"provider": "gemini", "model": "gemini-2.5-flash-lite", "timeout_seconds": 15},
+                    {"provider": "groq", "model": "qwen/qwen3.8-27b", "timeout_seconds": 15},
                     {"provider": "openai", "model": "gpt-4o-mini", "timeout_seconds": 15},
-                    {"provider": "gemini", "model": "gemini-2.0-flash", "timeout_seconds": 15},
-                    {"provider": "groq", "model": "llama-3.3-70b-versatile", "timeout_seconds": 15},
                 ],
             ),
             (
                 "code",
                 "priority",
                 [
-                    {"provider": "openai", "model": "gpt-4o-mini", "timeout_seconds": 15},
                     {"provider": "groq", "model": "qwen/qwen3.8-27b", "timeout_seconds": 15},
+                    {"provider": "gemini", "model": "gemini-2.5-flash-lite", "timeout_seconds": 15},
                     {"provider": "ollama", "model": "qwen2.5-coder", "timeout_seconds": 30},
                 ],
             ),
@@ -128,7 +144,8 @@ async def seed() -> None:
         for alias, strat, cands in route_configs:
             stmt = select(Route).where(Route.org_id == org.id, Route.alias == alias)
             res = await session.execute(stmt)
-            if not res.scalar_one_or_none():
+            existing_route = res.scalar_one_or_none()
+            if not existing_route:
                 r = Route(
                     org_id=org.id,
                     alias=alias,
@@ -137,6 +154,10 @@ async def seed() -> None:
                 )
                 session.add(r)
                 logger.info("Added route: %s", alias)
+            else:
+                existing_route.candidates = cands
+                existing_route.strategy = strat
+                logger.info("Updated route candidates: %s", alias)
 
         # 5. Platform Keys
         keys_setup = [

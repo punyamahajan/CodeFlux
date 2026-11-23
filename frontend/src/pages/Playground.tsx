@@ -6,7 +6,7 @@ import { WhyPanel } from '../components/WhyPanel'
 
 export const Playground: React.FC = () => {
   const [format, setFormat] = useState<'openai' | 'gemini'>('openai')
-  const [model, setModel] = useState('gpt-4o-mini')
+  const [model, setModel] = useState('fast')
   const [messages, setMessages] = useState<Array<{ role: string; content: string }>>([
     { role: 'user', content: 'Explain quantum computing in two sentences.' },
   ])

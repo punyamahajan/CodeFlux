@@ -124,3 +124,48 @@ async def deny_limit_request(
     )
     await session.commit()
     return LimitRequestResponse.model_validate(req)
+
+
+# ============================================================================
+# Admin Request Traces Endpoint
+# ============================================================================
+
+traces_router = APIRouter(prefix="/api/admin/traces", tags=["admin-traces"])
+
+
+@traces_router.get("", response_model=list[dict[str, object]])
+async def list_admin_traces(
+    admin: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict[str, object]]:
+    """List recent request traces for the organization."""
+    from sqlalchemy import select
+
+    from codeflux.db.models import RequestTrace
+
+    stmt = (
+        select(RequestTrace)
+        .where(RequestTrace.org_id == admin.org_id)
+        .order_by(RequestTrace.created_at.desc())
+        .limit(limit)
+    )
+    res = await session.execute(stmt)
+    traces = list(res.scalars().all())
+    return [
+        {
+            "id": t.id,
+            "org_id": t.org_id,
+            "key_id": t.key_id,
+            "provider": t.provider,
+            "model": t.model,
+            "status_code": t.status_code,
+            "latency_ms": t.latency_ms,
+            "prompt_tokens": t.prompt_tokens,
+            "completion_tokens": t.completion_tokens,
+            "cost_micro": t.cost_micro,
+            "facts": t.facts or {},
+            "created_at": t.created_at.isoformat() if t.created_at else "",
+        }
+        for t in traces
+    ]
