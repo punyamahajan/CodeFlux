@@ -1,0 +1,75 @@
+import React from 'react'
+import { CheckCircle2, XCircle, SkipForward } from 'lucide-react'
+
+interface Attempt {
+  provider: string
+  model: string
+  status_code?: number | null
+  latency_ms?: number | null
+  error?: string | null
+  skipped?: boolean
+  skip_reason?: string | null
+}
+
+interface AttemptTimelineProps {
+  attempts: Attempt[]
+}
+
+export const AttemptTimeline: React.FC<AttemptTimelineProps> = ({ attempts }) => {
+  if (!attempts || attempts.length === 0) {
+    return <p className="text-xs text-slate-500 italic">No attempt records logged.</p>
+  }
+
+  return (
+    <div className="space-y-3">
+      {attempts.map((att, idx) => {
+        const isSuccess = !att.skipped && !att.error && (!att.status_code || att.status_code < 400)
+        const isSkipped = att.skipped
+        const isFailed = !att.skipped && (Boolean(att.error) || (att.status_code && att.status_code >= 400))
+
+        return (
+          <div
+            key={idx}
+            className={`p-3 rounded-xl border flex items-start justify-between text-xs ${
+              isSuccess
+                ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
+                : isSkipped
+                ? 'bg-slate-900 border-slate-800 text-slate-400'
+                : 'bg-rose-950/20 border-rose-800/40 text-rose-300'
+            }`}
+          >
+            <div className="flex items-start space-x-2.5">
+              <div className="mt-0.5">
+                {isSuccess && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                {isSkipped && <SkipForward className="w-4 h-4 text-slate-400" />}
+                {isFailed && <XCircle className="w-4 h-4 text-rose-400" />}
+              </div>
+              <div>
+                <div className="font-semibold text-slate-100 flex items-center space-x-2">
+                  <span>{att.provider} / {att.model}</span>
+                  {att.status_code && (
+                    <span className="px-1.5 py-0.2 bg-slate-800 rounded font-mono text-[10px]">
+                      HTTP {att.status_code}
+                    </span>
+                  )}
+                </div>
+                {att.skip_reason && (
+                  <p className="text-[11px] text-slate-400 mt-0.5">Skipped: {att.skip_reason}</p>
+                )}
+                {att.error && (
+                  <p className="text-[11px] text-rose-400 mt-0.5">Error: {att.error}</p>
+                )}
+              </div>
+            </div>
+
+            {att.latency_ms !== null && att.latency_ms !== undefined && (
+              <span className="font-mono text-[11px] text-slate-400">
+                {att.latency_ms} ms
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}

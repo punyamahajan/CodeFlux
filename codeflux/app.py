@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -12,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import FileResponse
+from starlette.staticfiles import StaticFiles
 
 from codeflux.api import (
     admin_requests_router,
@@ -686,6 +689,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "limits": router.key_pool.snapshot(),
             "circuits": request.app.state.breaker.snapshot(),
         }
+
+    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if frontend_dist.exists():
+        assets_dir = frontend_dist / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(full_path: str):
+            if full_path.startswith(("api", "v1", "health", "metrics", "dashboard")):
+                raise HTTPException(status_code=404, detail="Not found")
+            index_file = frontend_dist / "index.html"
+            if index_file.exists():
+                return FileResponse(index_file)
+            return JSONResponse({"status": "frontend_not_built"}, status_code=404)
 
     return app
 

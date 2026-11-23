@@ -6,4 +6,5 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 data/*.db
-
+frontend/node_modules/
+frontend/dist/
