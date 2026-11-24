@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    actor Client as Client / IDE Agent
+    participant Gateway as Ingress & Auth Guard
+    participant Budget as Budget Evaluator
+    participant Router as Routing Engine
+    participant Breaker as Circuit Breaker Pool
+    participant Vault as Key Vault (Fernet)
+    participant Cloud as Cloud Provider (Groq / Gemini)
+    participant Local as Local Model (Ollama)
+    participant Ledger as Audit Ledger (DB)
+
+    Client->>Gateway: POST /v1/chat/completions (Bearer cf_key)
+    Gateway->>Gateway: HMAC-SHA256(secret, cf_key) == Digest
+    
+    Gateway->>Budget: Validate Month-to-Date Token Consumption
+    alt Quota Exceeded (Usage >= Limit)
+        Budget-->>Client: HTTP 429 Too Many Requests (Budget Exhausted)
+    else Quota Available
+        Budget->>Router: Forward Normalized Unified Payload
+        
+        Router->>Breaker: Check Candidate 1 (Primary Cloud)
+        alt Circuit Open / Cooldown Active
+            Breaker-->>Router: Candidate 1 Tripped (Skip)
+        else Circuit Closed
+            Router->>Vault: Fetch & Decrypt Primary Key (LRU)
+            Vault-->>Router: Transient Plaintext Key
+            Router->>Cloud: Dispatch Inbound Prompt (Timeout = 10s)
+            Cloud-->>Router: HTTP 429 / HTTP 503 (Upstream Throttled)
+            Router->>Breaker: Record Failure (FailCount += 1)
+        end
+
+        Note over Router,Local: Failover triggered: Routing Engine cascades to offline candidate
+        
+        Router->>Local: Dispatch Fallback Prompt (qwen2.5-coder)
+        Local-->>Router: HTTP 200 OK + Generated Stream / Tokens
+        
+        Router->>Ledger: Insert Transaction (Tokens, Latency, Fallback Flags)
+        Router-->>Client: HTTP 200 OK (OpenAI-compatible Response Body)
+    end

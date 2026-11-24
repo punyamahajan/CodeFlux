@@ -8,3 +8,6 @@ __pycache__/
 data/*.db
 frontend/node_modules/
 frontend/dist/
+
+PRJ4_Report.docx
+report_text_extracted.txt

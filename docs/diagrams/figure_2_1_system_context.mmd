@@ -1,0 +1,42 @@
+graph TD
+    subgraph Clients["Downstream Consumers"]
+        C1["Python / Node.js SDK Clients"]
+        C2["IDE Coding Assistants (Cursor, VS Code)"]
+        C3["Automated CI/CD Pipelines & Agents"]
+    end
+
+    subgraph Gateway["CodeFlux Gateway Perimeter (:8000)"]
+        direction TB
+        G1["Ingress Filter & CORS"]
+        G2["Auth Guard<br/>(Constant-Time HMAC-SHA256)"]
+        G3["Budget Engine<br/>(Calendar-Month Quota Gate)"]
+        G4["Dynamic Router<br/>(Priority / Latency EMA / Round-Robin)"]
+        G5["Per-Key Circuit Breaker<br/>(Threshold=3, Cooldown=30s)"]
+        G6["Credential Vault<br/>(AES-128-CBC / Fernet with LRU Rotation)"]
+        
+        G1 --> G2
+        G2 --> G3
+        G3 --> G4
+        G4 <--> G5
+        G4 <--> G6
+    end
+
+    subgraph Providers["Upstream Model Providers"]
+        P1[("OpenAI Cloud<br/>gpt-4o / gpt-4o-mini")]
+        P2[("Google Gemini Cloud<br/>gemini-2.5-flash")]
+        P3[("Groq Cloud<br/>llama-3.3-70b")]
+        P4[("Localhost Daemon<br/>Ollama / qwen2.5-coder")]
+    end
+
+    Clients -- "HTTP POST /v1/chat/completions<br/>(Bearer cf_... or ok_live_...)" --> G1
+    G4 -- "HTTPS (Restricted)" --> P1
+    G4 -- "HTTPS (Restricted)" --> P2
+    G4 -- "HTTPS (Restricted)" --> P3
+    G4 -- "HTTP Local Fallback" --> P4
+
+    classDef clientStyle fill:#EEF2FF,stroke:#6366F1,stroke-width:2px,color:#1E1B4B;
+    classDef gwStyle fill:#F8FAFC,stroke:#475569,stroke-width:2px,color:#0F172A;
+    classDef provStyle fill:#ECFDF5,stroke:#10B981,stroke-width:2px,color:#064E3B;
+    class C1,C2,C3 clientStyle;
+    class G1,G2,G3,G4,G5,G6 gwStyle;
+    class P1,P2,P3,P4 provStyle;

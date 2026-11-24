@@ -1,0 +1,51 @@
+erDiagram
+    CREDENTIALS {
+        string reference PK "Unique provider key handle"
+        string provider "openai | gemini | groq | ollama"
+        text encrypted_value "Fernet ciphertext (AES-128-CBC)"
+        datetime created_at "Registration timestamp"
+    }
+
+    CLIENT_API_KEYS {
+        int id PK "Auto-increment key ID"
+        string name "Key label / environment"
+        string team "Assigned tenant team"
+        string key_prefix "First 11 characters (Display only)"
+        string key_digest UK "Salted HMAC-SHA256 digest"
+        bigint monthly_token_limit "Maximum token quota per month"
+        boolean active "Active / Revoked flag"
+        datetime last_used_at "Timestamp of last invocation"
+    }
+
+    WORKFLOWS {
+        int id PK "Workflow ID"
+        string title "Goal title"
+        text master_prompt "High-level planning context"
+        string status "pending | in_progress | completed"
+        text result "Aggregated execution summary"
+    }
+
+    CHECKLIST_ITEMS {
+        int id PK "Task ID"
+        int workflow_id FK "Parent workflow reference"
+        text text "Actionable item description"
+        boolean completed "Boolean resolution flag"
+        int position "Execution order sequence"
+        string model_route "Target route alias"
+    }
+
+    USAGE_RECORDS {
+        int id PK "Auto-increment ledger ID"
+        datetime timestamp "UTC completion timestamp"
+        string team "Associated tenant team"
+        string provider "Fulfilling provider"
+        string key_ref "Credential handle used"
+        string model "Model invoked"
+        int prompt_tokens "Input tokens billed"
+        int completion_tokens "Output tokens billed"
+        float estimated_cost "Calculated cost in USD"
+    }
+
+    WORKFLOWS ||--o{ CHECKLIST_ITEMS : "contains"
+    CLIENT_API_KEYS ||--o{ USAGE_RECORDS : "tracks activity of"
+    CREDENTIALS ||--o{ USAGE_RECORDS : "dispatched through" 

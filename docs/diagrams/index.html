@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeFlux Project Report - Architectural Diagrams</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 40px;
+      text-align: center;
+    }
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 8px;
+    }
+    p.subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .diagram-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 36px;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin: 0;
+    }
+    .card-caption {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 8px;
+    }
+    button, a.btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: #334155;
+    }
+    button:hover, a.btn:hover {
+      background: #f1f5f9;
+      color: #0f172a;
+    }
+    button.primary, a.btn.primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    button.primary:hover, a.btn.primary:hover {
+      background: var(--primary-hover);
+    }
+    .diagram-preview {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 280px;
+      background: #fafafa;
+      border-radius: 12px;
+      padding: 20px;
+      overflow-x: auto;
+      border: 1px dashed var(--border);
+    }
+    .diagram-preview img, .diagram-preview svg {
+      max-width: 100%;
+      height: auto;
+    }
+    footer {
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 60px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>CodeFlux Report Diagrams</h1>
+      <p class="subtitle">High-resolution vector SVG and PNG exports for Project-IV Academic Report</p>
+    </header>
+
+    <!-- Figure 2.1 -->
+    <div class="diagram-card" id="card-fig-2-1">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Figure 2.1: System Context Diagram</h2>
+          <div class="card-caption">Downstream Consumers, Gateway Security Perimeter, and Upstream Model Providers</div>
+        </div>
+        <div class="btn-group">
+          <a class="btn primary" href="figure_2_1_system_context.svg" download="figure_2_1_system_context.svg">Download SVG (Vector)</a>
+          <button onclick="downloadAsPng('preview-2-1', 'figure_2_1_system_context.png')">Download PNG (High-Res)</button>
+          <a class="btn" href="figure_2_1_system_context.mmd" download="figure_2_1_system_context.mmd">Mermaid Source</a>
+        </div>
+      </div>
+      <div class="diagram-preview" id="preview-2-1">
+        <img src="figure_2_1_system_context.svg" alt="Figure 2.1: System Context Diagram">
+      </div>
+    </div>
+
+    <!-- Figure 4.1 -->
+    <div class="diagram-card" id="card-fig-4-1">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Figure 4.1: Relational Schema Design (ER Diagram)</h2>
+          <div class="card-caption">Persistent Entities: Credentials, Client API Keys, Workflows, Tasks, and Ledger</div>
+        </div>
+        <div class="btn-group">
+          <a class="btn primary" href="figure_4_1_relational_schema.svg" download="figure_4_1_relational_schema.svg">Download SVG (Vector)</a>
+          <button onclick="downloadAsPng('preview-4-1', 'figure_4_1_relational_schema.png')">Download PNG (High-Res)</button>
+          <a class="btn" href="figure_4_1_relational_schema.mmd" download="figure_4_1_relational_schema.mmd">Mermaid Source</a>
+        </div>
+      </div>
+      <div class="diagram-preview" id="preview-4-1">
+        <img src="figure_4_1_relational_schema.svg" alt="Figure 4.1: Relational Schema Design">
+      </div>
+    </div>
+
+    <!-- Figure 5.1 -->
+    <div class="diagram-card" id="card-fig-5-1">
+      <div class="card-header">
+        <div>
+          <h2 class="card-title">Figure 5.1: Architecture & Core Execution Pipeline</h2>
+          <div class="card-caption">Sequence flow: Authentication, Budgeting, Circuit Breaker Fallback, and Settlement</div>
+        </div>
+        <div class="btn-group">
+          <a class="btn primary" href="figure_5_1_execution_pipeline.svg" download="figure_5_1_execution_pipeline.svg">Download SVG (Vector)</a>
+          <button onclick="downloadAsPng('preview-5-1', 'figure_5_1_execution_pipeline.png')">Download PNG (High-Res)</button>
+          <a class="btn" href="figure_5_1_execution_pipeline.mmd" download="figure_5_1_execution_pipeline.mmd">Mermaid Source</a>
+        </div>
+      </div>
+      <div class="diagram-preview" id="preview-5-1">
+        <img src="figure_5_1_execution_pipeline.svg" alt="Figure 5.1: Architecture & Execution Pipeline">
+      </div>
+    </div>
+
+    <footer>
+      CodeFlux Architectural Report Figures • BML Munjal University • November 2026
+    </footer>
+  </div>
+
+  <script>
+    function downloadAsPng(containerId, filename) {
+      const container = document.getElementById(containerId);
+      const img = container.querySelector('img');
+      if (!img) return;
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const image = new Image();
+      image.crossOrigin = 'anonymous';
+
+      image.onload = function() {
+        const scale = 2; // 2x high resolution
+        canvas.width = image.naturalWidth * scale;
+        canvas.height = image.naturalHeight * scale;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(scale, scale);
+        ctx.drawImage(image, 0, 0);
+
+        const a = document.createElement('a');
+        a.download = filename;
+        a.href = canvas.toDataURL('image/png');
+        a.click();
+      };
+      image.src = img.src;
+    }
+  </script>
+</body>
+</html>
